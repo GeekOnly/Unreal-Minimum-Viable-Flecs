@@ -84,20 +84,47 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Wind3D")
 	void SetAmbientWind(FVector AmbientVelocity);
 
+	/** Optional: set an actor for the grid to follow (e.g. player pawn). Grid re-centers when it moves. */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D")
+	void SetGridCenterActor(AActor* Actor);
+
 	// --- C++ access ---
 	flecs::world* GetEcsWorld() const { return ECSWorld; }
 	const FWindGrid& GetWindGrid() const { return WindGrid; }
 	FWindGrid& GetWindGridMutable() { return WindGrid; }
 
+	// --- Simulation Parameters ---
+	float DiffusionRate = 0.15f;
+	float AdvectionForce = 0.05f;
+	float DecayRate = 2.f;
+
+	// --- World Wind Parameters ---
+	bool bEnableWorldWind = false;
+	float WorldWindSpeed = 200.f;
+	float WorldWindRotationSpeed = 15.f;
+	float WorldWindNoiseAmplitude = 30.f;
+	float WorldWindNoiseFrequency = 0.3f;
+	float WorldWindSpeedNoiseAmplitude = 50.f;
+
 protected:
 	flecs::world* ECSWorld = nullptr;
 	FWindGrid WindGrid;
-	FVector AmbientWind = FVector(100.f, 0.f, 0.f); 
+	FVector AmbientWind = FVector(100.f, 0.f, 0.f);
 
 private:
 	void RegisterComponents();
 	void RegisterSystems();
 	void DrawDebugWind();
+	void UpdateGridOffset();
+	void UpdateWorldWind(float DeltaTime);
+
+	// World wind state
+	float WorldWindTime = 0.f;
+
+	// Grid-follow state
+	TWeakObjectPtr<AActor> GridCenterActor;
+	FVector PreviousGridCenter = FVector::ZeroVector;
+	bool bGridCenterInitialized = false;
 
 	// Track HISM components that need MarkRenderStateDirty after ECS progress
 	TSet<UHierarchicalInstancedStaticMeshComponent*> DirtyHISMs;

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Curves/CurveFloat.h"
 #include "WindTypes.h"
 #include "WindVolumeComponent.generated.h"
 
@@ -38,4 +39,23 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor")
 	bool bEnabled = true;
+
+	// --- Lifetime & Curves (GoW-style) ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Lifetime")
+	bool bUseLifetime = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Lifetime", meta = (EditCondition = "bUseLifetime"))
+	bool bLoop = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Lifetime", meta = (ClampMin = "0.1", EditCondition = "bUseLifetime"))
+	float LifeTime = 5.f;
+
+	/** Multiplier curve over lifetime (0..1 normalized time). Default: flat 1.0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Lifetime", meta = (EditCondition = "bUseLifetime"))
+	FRuntimeFloatCurve ForceCurve;
+
+	/** Radius multiplier curve over lifetime (0..1 normalized time). Default: flat 1.0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Lifetime", meta = (EditCondition = "bUseLifetime"))
+	FRuntimeFloatCurve RadiusCurve;
 };

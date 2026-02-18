@@ -61,6 +61,48 @@ void AWindMotorActor::Tick(float DeltaTime)
 
 	if (!WindVolumeComp) return;
 
+	// Evaluate lifetime and curves
+	float EffectiveStrength = WindVolumeComp->Strength;
+	float EffectiveRadius = WindVolumeComp->Radius;
+	bool bEffectiveEnabled = WindVolumeComp->bEnabled;
+
+	if (WindVolumeComp->bUseLifetime)
+	{
+		ElapsedTime += DeltaTime;
+
+		if (ElapsedTime >= WindVolumeComp->LifeTime)
+		{
+			if (WindVolumeComp->bLoop)
+			{
+				ElapsedTime = FMath::Fmod(ElapsedTime, WindVolumeComp->LifeTime);
+			}
+			else
+			{
+				bEffectiveEnabled = false;
+			}
+		}
+
+		const float TimePercent = FMath::Clamp(ElapsedTime / WindVolumeComp->LifeTime, 0.f, 1.f);
+
+		// Evaluate force curve (defaults to 1.0 if no keys)
+		if (const FRichCurve* ForceCurve = WindVolumeComp->ForceCurve.GetRichCurveConst())
+		{
+			if (ForceCurve->GetNumKeys() > 0)
+			{
+				EffectiveStrength *= ForceCurve->Eval(TimePercent);
+			}
+		}
+
+		// Evaluate radius curve
+		if (const FRichCurve* RadiusCurve = WindVolumeComp->RadiusCurve.GetRichCurveConst())
+		{
+			if (RadiusCurve->GetNumKeys() > 0)
+			{
+				EffectiveRadius *= RadiusCurve->Eval(TimePercent);
+			}
+		}
+	}
+
 	UWindSubsystem* WindSys = GetWindSubsystem();
 	if (WindSys && ECSHandle.IsValid())
 	{
@@ -68,14 +110,14 @@ void AWindMotorActor::Tick(float DeltaTime)
 			ECSHandle,
 			GetActorLocation(),
 			GetActorForwardVector(),
-			WindVolumeComp->Strength,
-			WindVolumeComp->Radius,
+			EffectiveStrength,
+			EffectiveRadius,
 			WindVolumeComp->Shape,
 			WindVolumeComp->EmissionType,
 			WindVolumeComp->Height,
 			0.f,
 			WindVolumeComp->VortexAngularSpeed,
-			WindVolumeComp->bEnabled
+			bEffectiveEnabled
 		);
 	}
 }

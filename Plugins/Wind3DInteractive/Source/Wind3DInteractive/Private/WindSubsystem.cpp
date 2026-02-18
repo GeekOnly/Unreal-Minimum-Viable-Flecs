@@ -89,17 +89,34 @@ void UWindSubsystem::Tick(float DeltaTime)
 	{
 		TickTimer = 0.f;
 		const int32 CVarVal = CVarShowWindDebug.GetValueOnGameThread();
-        // Since we are now a WorldSubsystem, GetWorld() should always be valid
 		const UWorld* World = GetWorld();
-		UE_LOG(LogWind3D, Log, TEXT("WindSubsystem Tick Heartbeat: CVar=%d, World=%s, Time=%f"), 
+		UE_LOG(LogWind3D, Log, TEXT("WindSubsystem Tick Heartbeat: CVar=%d, World=%s, Time=%f"),
 			CVarVal, World ? *World->GetName() : TEXT("None"), World ? World->GetTimeSeconds() : 0.f);
 	}
 
 	if (ECSWorld)
 	{
 		DirtyHISMs.Reset();
-		WindGrid.DecayToAmbient(AmbientWind, 2.f, DeltaTime);
+
+		// === GoW Wind Simulation Pipeline ===
+
+		// 0. World Wind — rotate ambient direction with noise
+		UpdateWorldWind(DeltaTime);
+
+		// 1. Grid Offset — shift data when center actor moves
+		UpdateGridOffset();
+
+		// 2. Decay toward ambient (now with rotating direction)
+		WindGrid.DecayToAmbient(AmbientWind, DecayRate, DeltaTime);
+
+		// 3. Motor Injection (ECS system)
 		ECSWorld->progress(DeltaTime);
+
+		// 4. Diffusion — 3D blur to spread wind naturally
+		WindGrid.Diffuse(DiffusionRate, DeltaTime);
+
+		// 5. Advection — wind carries velocity downstream
+		WindGrid.Advect(AdvectionForce, DeltaTime);
 
 		// Batch mark render state dirty for all affected HISMs
 		for (auto* HISM : DirtyHISMs)
@@ -107,7 +124,7 @@ void UWindSubsystem::Tick(float DeltaTime)
 			if (HISM) HISM->MarkRenderStateDirty();
 		}
 	}
-	
+
 	if (CVarShowWindDebug.GetValueOnGameThread() > 0)
 	{
 		DrawDebugWind();
@@ -135,6 +152,90 @@ void UWindSubsystem::SetupWindGrid(FVector Origin, float CellSize, int32 InSizeX
 void UWindSubsystem::SetAmbientWind(FVector AmbientVelocity)
 {
 	AmbientWind = AmbientVelocity;
+}
+
+void UWindSubsystem::UpdateWorldWind(float DeltaTime)
+{
+	if (!bEnableWorldWind) return;
+
+	WorldWindTime += DeltaTime;
+
+	// Base rotation around Z-axis
+	const float BaseAngleDeg = WorldWindRotationSpeed * WorldWindTime;
+
+	// Add Perlin-like noise using sin of different frequencies (cheap but organic)
+	const float T = WorldWindTime * WorldWindNoiseFrequency;
+	const float NoiseAngle = WorldWindNoiseAmplitude * (
+		FMath::Sin(T * 2.f * PI) * 0.5f +
+		FMath::Sin(T * 1.37f * 2.f * PI) * 0.3f +
+		FMath::Sin(T * 2.71f * 2.f * PI) * 0.2f
+	);
+
+	const float FinalAngleDeg = BaseAngleDeg + NoiseAngle;
+	const float AngleRad = FMath::DegreesToRadians(FinalAngleDeg);
+
+	// Speed variation with noise
+	const float SpeedNoise = WorldWindSpeedNoiseAmplitude * (
+		FMath::Sin(T * 0.7f * 2.f * PI) * 0.6f +
+		FMath::Sin(T * 1.9f * 2.f * PI) * 0.4f
+	);
+	const float FinalSpeed = FMath::Max(WorldWindSpeed + SpeedNoise, 0.f);
+
+	// Compute direction on XY plane (rotating around Z)
+	AmbientWind = FVector(
+		FMath::Cos(AngleRad) * FinalSpeed,
+		FMath::Sin(AngleRad) * FinalSpeed,
+		0.f
+	);
+}
+
+void UWindSubsystem::SetGridCenterActor(AActor* Actor)
+{
+	GridCenterActor = Actor;
+	bGridCenterInitialized = false;
+	if (Actor)
+	{
+		UE_LOG(LogWind3D, Log, TEXT("Grid center actor set to: %s"), *Actor->GetName());
+	}
+}
+
+void UWindSubsystem::UpdateGridOffset()
+{
+	if (!GridCenterActor.IsValid()) return;
+
+	const FVector CurrentCenter = GridCenterActor->GetActorLocation();
+
+	if (!bGridCenterInitialized)
+	{
+		PreviousGridCenter = CurrentCenter;
+		bGridCenterInitialized = true;
+		return;
+	}
+
+	const FVector Delta = CurrentCenter - PreviousGridCenter;
+
+	// Convert world-space delta to cell offset
+	const FIntVector CellOffset(
+		FMath::FloorToInt(Delta.X / WindGrid.CellSize),
+		FMath::FloorToInt(Delta.Y / WindGrid.CellSize),
+		FMath::FloorToInt(Delta.Z / WindGrid.CellSize)
+	);
+
+	if (CellOffset.X == 0 && CellOffset.Y == 0 && CellOffset.Z == 0) return;
+
+	// Shift grid data in opposite direction (so wind stays in correct world space)
+	WindGrid.ShiftData(FIntVector(-CellOffset.X, -CellOffset.Y, -CellOffset.Z), AmbientWind);
+
+	// Move grid origin by the cell-snapped amount
+	const FVector OriginShift(
+		CellOffset.X * WindGrid.CellSize,
+		CellOffset.Y * WindGrid.CellSize,
+		CellOffset.Z * WindGrid.CellSize
+	);
+	WindGrid.WorldOrigin += OriginShift;
+
+	// Update previous center (only consume the cell-snapped portion)
+	PreviousGridCenter += OriginShift;
 }
 
 FWindEntityHandle UWindSubsystem::RegisterWindMotor(

@@ -54,9 +54,27 @@ void AWindFieldSetupActor::BeginPlay()
         WindSys->SetupWindGrid(Origin, CellSize, GridSizeX, GridSizeY, GridSizeZ);
         WindSys->SetAmbientWind(AmbientWind);
 
+        // Pass simulation parameters
+        WindSys->DiffusionRate = DiffusionRate;
+        WindSys->AdvectionForce = AdvectionForce;
+        WindSys->DecayRate = DecayRate;
+
+        // World wind (rotating ambient)
+        WindSys->bEnableWorldWind = bEnableWorldWind;
+        WindSys->WorldWindSpeed = WorldWindSpeed;
+        WindSys->WorldWindRotationSpeed = WorldWindRotationSpeed;
+        WindSys->WorldWindNoiseAmplitude = WorldWindNoiseAmplitude;
+        WindSys->WorldWindNoiseFrequency = WorldWindNoiseFrequency;
+        WindSys->WorldWindSpeedNoiseAmplitude = WorldWindSpeedNoiseAmplitude;
+
+        // Set grid center actor (for follow-player)
+        if (AActor* Center = CenterActor.Get())
+        {
+            WindSys->SetGridCenterActor(Center);
+        }
+
         if (bAutoStartDebug)
         {
-            // Set console variable
             UKismetSystemLibrary::ExecuteConsoleCommand(this, TEXT("Wind3D.ShowDebug 1"));
         }
     }

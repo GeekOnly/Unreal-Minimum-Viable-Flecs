@@ -38,6 +38,7 @@ protected:
 
 private:
 	FWindEntityHandle ECSHandle;
+	float ElapsedTime = 0.f;
 
 	UWindSubsystem* GetWindSubsystem() const;
 };

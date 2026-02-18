@@ -32,8 +32,49 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Grid")
 	FVector AmbientWind = FVector(100.f, 0.f, 0.f);
 
+	// --- World Wind (rotating ambient) ---
+
+	/** Base wind speed (cm/s). Direction rotates over time. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Wind", meta = (ClampMin = "0.0"))
+	float WorldWindSpeed = 200.f;
+
+	/** Rotation speed around Z-axis (degrees/sec). Creates swaying wind direction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Wind")
+	float WorldWindRotationSpeed = 15.f;
+
+	/** Noise amplitude added to wind angle (degrees). Makes rotation organic, not perfectly circular. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Wind", meta = (ClampMin = "0.0"))
+	float WorldWindNoiseAmplitude = 30.f;
+
+	/** Noise frequency (cycles/sec). Lower = slower organic sway. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Wind", meta = (ClampMin = "0.01"))
+	float WorldWindNoiseFrequency = 0.3f;
+
+	/** Noise amplitude for wind speed variation (cm/s). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Wind", meta = (ClampMin = "0.0"))
+	float WorldWindSpeedNoiseAmplitude = 50.f;
+
+	/** Enable world wind (overrides static AmbientWind). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Wind")
+	bool bEnableWorldWind = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bAutoStartDebug = true;
+
+	// --- Simulation Parameters ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float DiffusionRate = 0.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AdvectionForce = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0"))
+	float DecayRate = 2.f;
+
+	/** Optional: actor for the grid to follow (e.g. player pawn). Leave None for static grid. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Grid")
+	TSoftObjectPtr<AActor> CenterActor;
 
 protected:
 	virtual void BeginPlay() override;
