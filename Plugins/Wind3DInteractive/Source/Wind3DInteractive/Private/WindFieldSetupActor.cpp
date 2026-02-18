@@ -61,6 +61,7 @@ void AWindFieldSetupActor::BeginPlay()
         WindSys->DiffusionIterations = DiffusionIterations;
         WindSys->bForwardAdvection = bForwardAdvection;
         WindSys->BoundaryFadeCells = BoundaryFadeCells;
+        WindSys->PressureIterations = PressureIterations;
 
         // World wind (rotating ambient)
         WindSys->bEnableWorldWind = bEnableWorldWind;

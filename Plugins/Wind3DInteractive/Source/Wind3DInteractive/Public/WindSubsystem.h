@@ -112,11 +112,12 @@ public:
 
 	// --- Simulation Parameters ---
 	float DiffusionRate = 0.15f;
-	float AdvectionForce = 0.05f;
+	float AdvectionForce = 1.0f;   // 1.0 = physically correct (velocity in cm/s / CellSize)
 	float DecayRate = 2.f;
 	int32 DiffusionIterations = 2;
 	bool bForwardAdvection = true;
 	int32 BoundaryFadeCells = 2;
+	int32 PressureIterations = 20; // Gauss-Seidel iterations for divergence removal
 
 	// --- Material Integration Parameters ---
 	float OverallPower = 1.0f;

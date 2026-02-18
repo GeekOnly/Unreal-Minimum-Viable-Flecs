@@ -40,6 +40,7 @@ struct WIND3DINTERACTIVE_API FWindGrid
 	void SwapBuffers();
 	void Diffuse(float DiffusionRate, float DeltaTime, int32 Iterations = 1);
 	void Advect(float AdvectionForce, float DeltaTime, bool bForwardPass = true);
+	void ProjectPressure(int32 Iterations = 20);
 	void BoundaryFadeOut(int32 FadeCells = 2);
 	void ShiftData(FIntVector CellOffset, FVector AmbientWind);
 

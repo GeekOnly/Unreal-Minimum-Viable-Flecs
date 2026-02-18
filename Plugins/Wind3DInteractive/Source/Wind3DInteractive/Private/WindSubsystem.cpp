@@ -125,7 +125,14 @@ void UWindSubsystem::Tick(float DeltaTime)
 		// 5. Advection — wind carries velocity downstream (forward + reverse)
 		WindGrid.Advect(AdvectionForce, DeltaTime, bForwardAdvection);
 
-		// 5.5. Boundary fade-out — prevent hard cutoff at grid edges
+		// 5.5. Pressure projection — make velocity divergence-free
+		// This is what causes wind to flow AROUND obstacles instead of stopping
+		if (PressureIterations > 0)
+		{
+			WindGrid.ProjectPressure(PressureIterations);
+		}
+
+		// 5.75. Boundary fade-out — prevent hard cutoff at grid edges
 		if (BoundaryFadeCells > 0)
 		{
 			WindGrid.BoundaryFadeOut(BoundaryFadeCells);

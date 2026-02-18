@@ -76,8 +76,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float DiffusionRate = 0.15f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float AdvectionForce = 0.05f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0", ClampMax = "5.0"))
+	float AdvectionForce = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0"))
 	float DecayRate = 2.f;
@@ -93,6 +93,12 @@ public:
 	/** Number of cells from grid edge where wind fades to zero. 0 = disabled. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0", ClampMax = "8"))
 	int32 BoundaryFadeCells = 2;
+
+	/** Gauss-Seidel iterations for pressure projection (divergence removal).
+	 *  This makes wind flow AROUND obstacles. More = more accurate but costlier.
+	 *  0 = disabled. 20 = good quality. 40 = high quality. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0", ClampMax = "60"))
+	int32 PressureIterations = 20;
 
 	// --- Obstacle Detection ---
 

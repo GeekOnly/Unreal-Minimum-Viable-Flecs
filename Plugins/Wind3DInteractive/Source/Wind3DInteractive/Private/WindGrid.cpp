@@ -525,6 +525,120 @@ void FWindGrid::Advect(float AdvectionForce, float DeltaTime, bool bForwardPass)
 	SwapBuffers();
 }
 
+void FWindGrid::ProjectPressure(int32 Iterations)
+{
+	// Pressure projection (stable fluids, Gauss-Seidel Poisson solve)
+	// Makes velocity field divergence-free so wind flows AROUND obstacles
+	// instead of piling up at them or stopping dead.
+	//
+	// Algorithm:
+	//   1. Solve ∇²p = ∇·v  (Poisson eq — find pressure from divergence)
+	//   2. v -= ∇p          (subtract gradient — removes divergence)
+	//
+	// Boundary conditions:
+	//   Velocity: no flow into solid (Dirichlet, v_solid = 0)
+	//   Pressure: no gradient through solid (Neumann, p_solid = p_fluid)
+
+	const int32 Total = GetTotalCells();
+	TArray<float> Pressure;
+	Pressure.SetNumZeroed(Total);
+
+	// Helper: safe velocity component at neighbor, zero if solid/OOB
+	auto VX = [&](int32 Nx, int32 Ny, int32 Nz) -> float
+	{
+		if (!IsInBounds(Nx, Ny, Nz) || Solids[CellIndex(Nx, Ny, Nz)]) return 0.f;
+		return Velocities[CellIndex(Nx, Ny, Nz)].X;
+	};
+	auto VY = [&](int32 Nx, int32 Ny, int32 Nz) -> float
+	{
+		if (!IsInBounds(Nx, Ny, Nz) || Solids[CellIndex(Nx, Ny, Nz)]) return 0.f;
+		return Velocities[CellIndex(Nx, Ny, Nz)].Y;
+	};
+	auto VZ = [&](int32 Nx, int32 Ny, int32 Nz) -> float
+	{
+		if (!IsInBounds(Nx, Ny, Nz) || Solids[CellIndex(Nx, Ny, Nz)]) return 0.f;
+		return Velocities[CellIndex(Nx, Ny, Nz)].Z;
+	};
+
+	// --- Step 1: Gauss-Seidel pressure solve ---
+	for (int32 Iter = 0; Iter < Iterations; Iter++)
+	{
+		for (int32 Z = 0; Z < SizeZ; Z++)
+		{
+			for (int32 Y = 0; Y < SizeY; Y++)
+			{
+				for (int32 X = 0; X < SizeX; X++)
+				{
+					const int32 Idx = CellIndex(X, Y, Z);
+					if (Solids[Idx]) continue;
+
+					// Velocity divergence at this cell (central difference)
+					// Positive divergence = wind flowing out = excess pressure
+					const float Div =
+						(VX(X + 1, Y, Z) - VX(X - 1, Y, Z)) * 0.5f +
+						(VY(X, Y + 1, Z) - VY(X, Y - 1, Z)) * 0.5f +
+						(VZ(X, Y, Z + 1) - VZ(X, Y, Z - 1)) * 0.5f;
+
+					// Sum of open neighbor pressures (Neumann BC: solid mirrors pressure)
+					float SumP = 0.f;
+					int32 OpenCount = 0;
+
+					auto AddNeighborP = [&](int32 Nx, int32 Ny, int32 Nz)
+					{
+						if (!IsInBounds(Nx, Ny, Nz) || Solids[CellIndex(Nx, Ny, Nz)])
+						{
+							SumP += Pressure[Idx]; // Neumann: dp/dn = 0 -> mirror
+						}
+						else
+						{
+							SumP += Pressure[CellIndex(Nx, Ny, Nz)];
+						}
+						OpenCount++;
+					};
+
+					AddNeighborP(X + 1, Y, Z);
+					AddNeighborP(X - 1, Y, Z);
+					AddNeighborP(X, Y + 1, Z);
+					AddNeighborP(X, Y - 1, Z);
+					AddNeighborP(X, Y, Z + 1);
+					AddNeighborP(X, Y, Z - 1);
+
+					if (OpenCount > 0)
+					{
+						Pressure[Idx] = (SumP - Div) / (float)OpenCount;
+					}
+				}
+			}
+		}
+	}
+
+	// --- Step 2: Subtract pressure gradient from velocity ---
+	// This makes the field divergence-free — wind redirects around obstacles
+	for (int32 Z = 0; Z < SizeZ; Z++)
+	{
+		for (int32 Y = 0; Y < SizeY; Y++)
+		{
+			for (int32 X = 0; X < SizeX; X++)
+			{
+				const int32 Idx = CellIndex(X, Y, Z);
+				if (Solids[Idx]) continue;
+
+				// Pressure at neighbor — mirror pressure at walls (Neumann BC)
+				auto P = [&](int32 Nx, int32 Ny, int32 Nz) -> float
+				{
+					if (!IsInBounds(Nx, Ny, Nz) || Solids[CellIndex(Nx, Ny, Nz)])
+						return Pressure[Idx];
+					return Pressure[CellIndex(Nx, Ny, Nz)];
+				};
+
+				Velocities[Idx].X -= (P(X + 1, Y, Z) - P(X - 1, Y, Z)) * 0.5f;
+				Velocities[Idx].Y -= (P(X, Y + 1, Z) - P(X, Y - 1, Z)) * 0.5f;
+				Velocities[Idx].Z -= (P(X, Y, Z + 1) - P(X, Y, Z - 1)) * 0.5f;
+			}
+		}
+	}
+}
+
 void FWindGrid::BoundaryFadeOut(int32 FadeCells)
 {
 	// Reduce wind strength at grid edges to prevent hard cutoff artifacts
