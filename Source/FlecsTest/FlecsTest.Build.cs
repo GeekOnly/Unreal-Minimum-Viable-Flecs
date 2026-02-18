@@ -10,6 +10,6 @@ public class FlecsTest : ModuleRules
 	
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "FlecsLibrary" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "FlecsLibrary", "Wind3DInteractive" });
 	}
 }

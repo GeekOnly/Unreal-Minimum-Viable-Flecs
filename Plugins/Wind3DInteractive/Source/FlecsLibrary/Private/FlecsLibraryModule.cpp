@@ -2,7 +2,7 @@
 #include "Modules/ModuleManager.h"
 #include "Modules/ModuleInterface.h"
 
-IMPLEMENT_GAME_MODULE(FFlecsLibraryModule, FlecsLibrary);
+IMPLEMENT_MODULE(FFlecsLibraryModule, FlecsLibrary);
 
 DEFINE_LOG_CATEGORY(FlecsLibrary);
  
