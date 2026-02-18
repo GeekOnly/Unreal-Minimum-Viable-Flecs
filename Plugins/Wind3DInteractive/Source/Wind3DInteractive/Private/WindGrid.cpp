@@ -326,49 +326,128 @@ FVector FWindGrid::SampleVelocityAtLocal(float Lx, float Ly, float Lz) const
 	return Result;
 }
 
-void FWindGrid::Diffuse(float DiffusionRate, float DeltaTime)
+void FWindGrid::Diffuse(float DiffusionRate, float DeltaTime, int32 Iterations)
 {
 	// GoW-style 3D diffusion: 6-neighbor Laplacian blur
+	// Multiple iterations produce smoother, more physically accurate spreading
 	const float Alpha = DiffusionRate * DeltaTime;
 	if (Alpha <= 0.f) return;
 
-	for (int32 Z = 0; Z < SizeZ; Z++)
+	Iterations = FMath::Clamp(Iterations, 1, 8);
+
+	for (int32 Iter = 0; Iter < Iterations; Iter++)
 	{
-		for (int32 Y = 0; Y < SizeY; Y++)
+		for (int32 Z = 0; Z < SizeZ; Z++)
 		{
-			for (int32 X = 0; X < SizeX; X++)
+			for (int32 Y = 0; Y < SizeY; Y++)
 			{
-				const int32 Idx = CellIndex(X, Y, Z);
-				const FVector& Center = Velocities[Idx];
+				for (int32 X = 0; X < SizeX; X++)
+				{
+					const int32 Idx = CellIndex(X, Y, Z);
+					const FVector& Center = Velocities[Idx];
 
-				// Sample 6 neighbors (clamp at boundaries)
-				const FVector Xp = Velocities[CellIndex(FMath::Min(X + 1, SizeX - 1), Y, Z)];
-				const FVector Xn = Velocities[CellIndex(FMath::Max(X - 1, 0), Y, Z)];
-				const FVector Yp = Velocities[CellIndex(X, FMath::Min(Y + 1, SizeY - 1), Z)];
-				const FVector Yn = Velocities[CellIndex(X, FMath::Max(Y - 1, 0), Z)];
-				const FVector Zp = Velocities[CellIndex(X, Y, FMath::Min(Z + 1, SizeZ - 1))];
-				const FVector Zn = Velocities[CellIndex(X, Y, FMath::Max(Z - 1, 0))];
+					// Sample 6 neighbors (clamp at boundaries)
+					const FVector Xp = Velocities[CellIndex(FMath::Min(X + 1, SizeX - 1), Y, Z)];
+					const FVector Xn = Velocities[CellIndex(FMath::Max(X - 1, 0), Y, Z)];
+					const FVector Yp = Velocities[CellIndex(X, FMath::Min(Y + 1, SizeY - 1), Z)];
+					const FVector Yn = Velocities[CellIndex(X, FMath::Max(Y - 1, 0), Z)];
+					const FVector Zp = Velocities[CellIndex(X, Y, FMath::Min(Z + 1, SizeZ - 1))];
+					const FVector Zn = Velocities[CellIndex(X, Y, FMath::Max(Z - 1, 0))];
 
-				const FVector Laplacian = (Xp + Xn + Yp + Yn + Zp + Zn) - Center * 6.f;
-				VelocitiesBack[Idx] = Center + Laplacian * Alpha;
+					const FVector Laplacian = (Xp + Xn + Yp + Yn + Zp + Zn) - Center * 6.f;
+					VelocitiesBack[Idx] = Center + Laplacian * Alpha;
+				}
 			}
 		}
-	}
 
-	SwapBuffers();
+		SwapBuffers();
+	}
 }
 
-void FWindGrid::Advect(float AdvectionForce, float DeltaTime)
+void FWindGrid::Advect(float AdvectionForce, float DeltaTime, bool bForwardPass)
 {
-	// GoW-style semi-Lagrangian advection:
-	// Forward pass: distribute velocity to target cells
-	// Then reverse pass: gather from source cells
-	// Combined here as reverse-advection (backtrace) for stability
-
 	const float Factor = AdvectionForce * DeltaTime / CellSize;
 	if (FMath::Abs(Factor) < SMALL_NUMBER) return;
 
-	// Reverse advection: for each cell, backtrace along velocity to find source
+	// --- Forward advection: distribute velocity to where it's going ---
+	// More accurate for fast-moving wind; prevents "vacuum" artifacts
+	if (bForwardPass)
+	{
+		// Zero out back buffer for accumulation
+		FMemory::Memzero(VelocitiesBack.GetData(), VelocitiesBack.Num() * sizeof(FVector));
+
+		// Weight buffer tracks how much total weight each target cell received
+		TArray<float> Weights;
+		Weights.SetNumZeroed(GetTotalCells());
+
+		for (int32 Z = 0; Z < SizeZ; Z++)
+		{
+			for (int32 Y = 0; Y < SizeY; Y++)
+			{
+				for (int32 X = 0; X < SizeX; X++)
+				{
+					const int32 Idx = CellIndex(X, Y, Z);
+					const FVector& Vel = Velocities[Idx];
+
+					// Target position: where does this cell's wind go?
+					const float TgtX = (float)X + Vel.X * Factor;
+					const float TgtY = (float)Y + Vel.Y * Factor;
+					const float TgtZ = (float)Z + Vel.Z * Factor;
+
+					// Distribute to 8 surrounding cells (trilinear splat)
+					const int32 X0 = FMath::FloorToInt(TgtX);
+					const int32 Y0 = FMath::FloorToInt(TgtY);
+					const int32 Z0 = FMath::FloorToInt(TgtZ);
+
+					const float Fx = TgtX - X0;
+					const float Fy = TgtY - Y0;
+					const float Fz = TgtZ - Z0;
+
+					for (int32 Dz = 0; Dz <= 1; Dz++)
+					{
+						for (int32 Dy = 0; Dy <= 1; Dy++)
+						{
+							for (int32 Dx = 0; Dx <= 1; Dx++)
+							{
+								const int32 Cx = X0 + Dx;
+								const int32 Cy = Y0 + Dy;
+								const int32 Cz = Z0 + Dz;
+
+								if (!IsInBounds(Cx, Cy, Cz)) continue;
+
+								const float Wx = Dx ? Fx : (1.f - Fx);
+								const float Wy = Dy ? Fy : (1.f - Fy);
+								const float Wz = Dz ? Fz : (1.f - Fz);
+								const float W = Wx * Wy * Wz;
+
+								const int32 TgtIdx = CellIndex(Cx, Cy, Cz);
+								VelocitiesBack[TgtIdx] += Vel * W;
+								Weights[TgtIdx] += W;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Normalize: cells that received weight > 0 use averaged velocity
+		// Cells with no contribution keep original velocity (prevents holes)
+		for (int32 I = 0; I < GetTotalCells(); I++)
+		{
+			if (Weights[I] > SMALL_NUMBER)
+			{
+				VelocitiesBack[I] /= Weights[I];
+			}
+			else
+			{
+				VelocitiesBack[I] = Velocities[I];
+			}
+		}
+
+		SwapBuffers();
+	}
+
+	// --- Reverse advection (semi-Lagrangian backtrace) ---
 	for (int32 Z = 0; Z < SizeZ; Z++)
 	{
 		for (int32 Y = 0; Y < SizeY; Y++)
@@ -383,13 +462,44 @@ void FWindGrid::Advect(float AdvectionForce, float DeltaTime)
 				const float SrcY = (float)Y - Vel.Y * Factor;
 				const float SrcZ = (float)Z - Vel.Z * Factor;
 
-				// Trilinear sample from source position
 				VelocitiesBack[Idx] = SampleVelocityAtLocal(SrcX, SrcY, SrcZ);
 			}
 		}
 	}
 
 	SwapBuffers();
+}
+
+void FWindGrid::BoundaryFadeOut(int32 FadeCells)
+{
+	// Reduce wind strength at grid edges to prevent hard cutoff artifacts
+	FadeCells = FMath::Clamp(FadeCells, 1, FMath::Min3(SizeX, SizeY, SizeZ) / 2);
+	const float InvFade = 1.f / (float)FadeCells;
+
+	for (int32 Z = 0; Z < SizeZ; Z++)
+	{
+		for (int32 Y = 0; Y < SizeY; Y++)
+		{
+			for (int32 X = 0; X < SizeX; X++)
+			{
+				// Distance from each edge (in cells)
+				const float Dx = FMath::Min((float)X, (float)(SizeX - 1 - X));
+				const float Dy = FMath::Min((float)Y, (float)(SizeY - 1 - Y));
+				const float Dz = FMath::Min((float)Z, (float)(SizeZ - 1 - Z));
+
+				// Minimum distance to any edge
+				const float EdgeDist = FMath::Min3(Dx, Dy, Dz);
+
+				if (EdgeDist >= FadeCells) continue;
+
+				// Smooth fade: 0 at edge -> 1 at FadeCells distance
+				const float Alpha = FMath::SmoothStep(0.f, 1.f, EdgeDist * InvFade);
+				const int32 Idx = CellIndex(X, Y, Z);
+				Velocities[Idx] *= Alpha;
+				Turbulences[Idx] *= Alpha;
+			}
+		}
+	}
 }
 
 void FWindGrid::ShiftData(FIntVector CellOffset, FVector AmbientWind)

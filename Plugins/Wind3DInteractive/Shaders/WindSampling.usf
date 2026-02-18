@@ -158,3 +158,73 @@ float4 SampleWindFast(
 
     return float4(Velocity, Turbulence);
 }
+
+// ============================================================
+// Debug Visualization Functions
+// ============================================================
+// Use in a translucent debug material instead of DrawDebugWind.
+//
+// Material Custom Expression example:
+//   #include "/Plugin/Wind3DInteractive/WindSampling.usf"
+//   return DebugWindColor(WindAtlas, WindAtlasSampler, WorldPos, Origin, Size, Cells, Power);
+//
+// Wire output.rgb -> Emissive, output.a -> Opacity
+
+// Speed-to-color ramp: Green -> Yellow -> Orange -> Red
+float3 WindSpeedToColor(float Speed)
+{
+    float NormSpeed = saturate(Speed / WindMaxSpeed);
+
+    float3 Green  = float3(0.1, 0.8, 0.2);
+    float3 Yellow = float3(1.0, 0.9, 0.1);
+    float3 Orange = float3(1.0, 0.5, 0.0);
+    float3 Red    = float3(1.0, 0.1, 0.1);
+
+    if (NormSpeed < 0.25)
+        return lerp(Green, Yellow, NormSpeed * 4.0);
+    else if (NormSpeed < 0.5)
+        return lerp(Yellow, Orange, (NormSpeed - 0.25) * 4.0);
+    else
+        return lerp(Orange, Red, saturate((NormSpeed - 0.5) * 2.0));
+}
+
+// Speed-based color visualization
+float4 DebugWindColor(
+    Texture2D WindAtlas,
+    SamplerState WindAtlasSampler,
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 GridCells,
+    float OverallPower)
+{
+    float4 WindData = SampleWind(WindAtlas, WindAtlasSampler, WorldPos, VolumeOrigin, VolumeSize, GridCells);
+    float3 Vel = WindData.xyz * OverallPower;
+    float Speed = length(Vel);
+
+    float3 Color = WindSpeedToColor(Speed);
+    float Opacity = saturate(Speed / (WindMaxSpeed * 0.3));
+
+    return float4(Color, Opacity);
+}
+
+// Direction-as-color visualization (XYZ direction mapped to RGB)
+float4 DebugWindDirection(
+    Texture2D WindAtlas,
+    SamplerState WindAtlasSampler,
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 GridCells,
+    float OverallPower)
+{
+    float4 WindData = SampleWind(WindAtlas, WindAtlasSampler, WorldPos, VolumeOrigin, VolumeSize, GridCells);
+    float3 Vel = WindData.xyz * OverallPower;
+    float Speed = length(Vel);
+
+    float3 Dir = (Speed > 1.0) ? normalize(Vel) : float3(0, 0, 0);
+    float3 Color = Dir * 0.5 + 0.5;
+    float Opacity = saturate(Speed / (WindMaxSpeed * 0.2));
+
+    return float4(Color, Opacity);
+}

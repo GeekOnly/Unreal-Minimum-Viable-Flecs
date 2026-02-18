@@ -37,8 +37,9 @@ struct WIND3DINTERACTIVE_API FWindGrid
 
 	// GoW simulation pipeline
 	void SwapBuffers();
-	void Diffuse(float DiffusionRate, float DeltaTime);
-	void Advect(float AdvectionForce, float DeltaTime);
+	void Diffuse(float DiffusionRate, float DeltaTime, int32 Iterations = 1);
+	void Advect(float AdvectionForce, float DeltaTime, bool bForwardPass = true);
+	void BoundaryFadeOut(int32 FadeCells = 2);
 	void ShiftData(FIntVector CellOffset, FVector AmbientWind);
 
 	int32 GetTotalCells() const { return SizeX * SizeY * SizeZ; }

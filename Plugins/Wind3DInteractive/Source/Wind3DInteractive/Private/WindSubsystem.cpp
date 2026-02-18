@@ -116,11 +116,17 @@ void UWindSubsystem::Tick(float DeltaTime)
 		// 3. Motor Injection (ECS system)
 		ECSWorld->progress(DeltaTime);
 
-		// 4. Diffusion — 3D blur to spread wind naturally
-		WindGrid.Diffuse(DiffusionRate, DeltaTime);
+		// 4. Diffusion — 3D blur to spread wind naturally (multi-pass)
+		WindGrid.Diffuse(DiffusionRate, DeltaTime, DiffusionIterations);
 
-		// 5. Advection — wind carries velocity downstream
-		WindGrid.Advect(AdvectionForce, DeltaTime);
+		// 5. Advection — wind carries velocity downstream (forward + reverse)
+		WindGrid.Advect(AdvectionForce, DeltaTime, bForwardAdvection);
+
+		// 5.5. Boundary fade-out — prevent hard cutoff at grid edges
+		if (BoundaryFadeCells > 0)
+		{
+			WindGrid.BoundaryFadeOut(BoundaryFadeCells);
+		}
 
 		// 6. Material Integration — update texture + MPC
 		if (bEnableMaterialIntegration)
@@ -263,21 +269,34 @@ FWindEntityHandle UWindSubsystem::RegisterWindMotor(
 {
 	if (!ECSWorld) return FWindEntityHandle();
 
-	flecs::entity Entity = ECSWorld->entity()
-		.set<FWindMotorData>({
-			.WorldPosition = Position,
-			.Direction = Direction.GetSafeNormal(),
-			.Strength = Strength,
-			.Radius = Radius,
-			.InnerRadius = 0.f,
-			.Height = 1000.f,
-			.VortexAngularSpeed = 1.f,
-			.Shape = static_cast<uint8>(Shape),
-			.EmissionType = static_cast<uint8>(EmissionType),
-			.bEnabled = 1
-		});
+	const FWindMotorData InitData = {
+		.WorldPosition = Position,
+		.Direction = Direction.GetSafeNormal(),
+		.Strength = Strength,
+		.Radius = Radius,
+		.InnerRadius = 0.f,
+		.Height = 1000.f,
+		.VortexAngularSpeed = 1.f,
+		.Shape = static_cast<uint8>(Shape),
+		.EmissionType = static_cast<uint8>(EmissionType),
+		.bEnabled = 1
+	};
 
-	UE_LOG(LogWind3D, Verbose, TEXT("Registered Wind Motor Entity %llu"), Entity.id());
+	flecs::entity Entity;
+
+	// Reuse pooled entity if available
+	if (MotorPool.Num() > 0)
+	{
+		Entity = MotorPool.Pop(false);
+		Entity.set<FWindMotorData>(InitData);
+		UE_LOG(LogWind3D, Verbose, TEXT("Reused pooled Wind Motor Entity %llu"), Entity.id());
+	}
+	else
+	{
+		Entity = ECSWorld->entity().set<FWindMotorData>(InitData);
+		UE_LOG(LogWind3D, Verbose, TEXT("Created new Wind Motor Entity %llu"), Entity.id());
+	}
+
 	return FWindEntityHandle(Entity.id());
 }
 
@@ -330,8 +349,16 @@ void UWindSubsystem::UnregisterWindMotor(FWindEntityHandle Handle)
 	flecs::entity Entity = ECSWorld->entity(Handle.EntityId);
 	if (Entity.is_valid())
 	{
-		Entity.destruct();
-		UE_LOG(LogWind3D, Verbose, TEXT("Unregistered Wind Motor Entity %llu"), Handle.EntityId);
+		// Pool instead of destroy: disable and stash for reuse
+		FWindMotorData* Data = Entity.get_mut<FWindMotorData>();
+		if (Data)
+		{
+			Data->bEnabled = 0;
+			Data->Strength = 0.f;
+		}
+		Entity.remove<FWindMotorData>();
+		MotorPool.Add(Entity);
+		UE_LOG(LogWind3D, Verbose, TEXT("Pooled Wind Motor Entity %llu (pool size: %d)"), Handle.EntityId, MotorPool.Num());
 	}
 }
 
@@ -362,7 +389,7 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 
 FVector UWindSubsystem::QueryWindAtPosition(FVector WorldPosition) const
 {
-	return WindGrid.SampleVelocityAt(WorldPosition);
+	return WindGrid.SampleVelocityAt(WorldPosition) * OverallPower;
 }
 
 void UWindSubsystem::DrawDebugWind()

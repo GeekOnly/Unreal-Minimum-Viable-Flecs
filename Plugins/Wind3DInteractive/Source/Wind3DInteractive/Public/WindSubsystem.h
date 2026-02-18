@@ -114,6 +114,9 @@ public:
 	float DiffusionRate = 0.15f;
 	float AdvectionForce = 0.05f;
 	float DecayRate = 2.f;
+	int32 DiffusionIterations = 2;
+	bool bForwardAdvection = true;
+	int32 BoundaryFadeCells = 2;
 
 	// --- Material Integration Parameters ---
 	float OverallPower = 1.0f;
@@ -149,6 +152,9 @@ private:
 
 	// Track HISM components that need MarkRenderStateDirty after ECS progress
 	TSet<UHierarchicalInstancedStaticMeshComponent*> DirtyHISMs;
+
+	// Motor entity pool — recycled on unregister, reused on register
+	TArray<flecs::entity> MotorPool;
 
 	// Material integration
 	FWindTextureManager TextureManager;

@@ -82,6 +82,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0"))
 	float DecayRate = 2.f;
 
+	/** Number of diffusion iterations per frame. More = smoother but costlier. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "1", ClampMax = "8"))
+	int32 DiffusionIterations = 2;
+
+	/** Enable forward advection pass before reverse (more accurate transport). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation")
+	bool bForwardAdvection = true;
+
+	/** Number of cells from grid edge where wind fades to zero. 0 = disabled. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0", ClampMax = "8"))
+	int32 BoundaryFadeCells = 2;
+
 	/** Optional: actor for the grid to follow (e.g. player pawn). Leave None for static grid. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Grid")
 	TSoftObjectPtr<AActor> CenterActor;
