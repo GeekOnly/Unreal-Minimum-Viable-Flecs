@@ -117,7 +117,9 @@ void AWindMotorActor::Tick(float DeltaTime)
 			WindVolumeComp->Height,
 			0.f,
 			WindVolumeComp->VortexAngularSpeed,
-			bEffectiveEnabled
+			bEffectiveEnabled,
+			WindVolumeComp->TopRadius,
+			WindVolumeComp->MoveLength
 		);
 	}
 }

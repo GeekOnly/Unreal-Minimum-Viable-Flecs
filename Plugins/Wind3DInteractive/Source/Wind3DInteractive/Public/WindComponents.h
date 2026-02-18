@@ -12,6 +12,14 @@ struct FWindMotorData
 	float    InnerRadius = 0.f;
 	float    Height = 500.f;
 	float    VortexAngularSpeed = 1.f;
+
+	// Moving motor: previous frame position for velocity-based wind
+	FVector  PreviousPosition = FVector::ZeroVector;
+	float    MoveLength = 0.f; // trail length behind the motor
+
+	// Cylinder shape: top radius can differ from bottom (Radius = bottom, TopRadius = top)
+	float    TopRadius = 0.f; // 0 = same as Radius
+
 	uint8    Shape = 0;        // EWindMotorShape
 	uint8    EmissionType = 0; // EWindEmissionType
 	uint8    bEnabled = 1;

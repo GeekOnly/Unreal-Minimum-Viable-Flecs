@@ -16,5 +16,6 @@ enum class EWindEmissionType : uint8
 {
 	Directional UMETA(DisplayName = "Directional"),
 	Omni        UMETA(DisplayName = "Omni"),
-	Vortex      UMETA(DisplayName = "Vortex")
+	Vortex      UMETA(DisplayName = "Vortex"),
+	Moving      UMETA(DisplayName = "Moving", ToolTip = "Wind follows object movement direction (sword slash, projectile)")
 };

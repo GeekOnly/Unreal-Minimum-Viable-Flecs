@@ -28,6 +28,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Shape", meta = (ClampMin = "1.0"))
 	float Radius = 300.f;
 
+	/** Top radius for Cylinder shape. 0 = same as Radius. Different from Radius creates a frustum/cone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Shape", meta = (ClampMin = "0.0", EditCondition = "Shape == EWindMotorShape::Cylinder"))
+	float TopRadius = 0.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Shape", meta = (ClampMin = "0.0"))
 	float Height = 500.f;
 
@@ -36,6 +40,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Force", meta = (ClampMin = "0.0"))
 	float VortexAngularSpeed = 1.f;
+
+	/** Trail length behind the motor for Moving emission type. Extends the wind capsule backwards. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Moving", meta = (ClampMin = "0.0", EditCondition = "EmissionType == EWindEmissionType::Moving"))
+	float MoveLength = 500.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor")
 	bool bEnabled = true;

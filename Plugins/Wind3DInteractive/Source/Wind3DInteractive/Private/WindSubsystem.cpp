@@ -292,7 +292,9 @@ void UWindSubsystem::UpdateWindMotor(
 	float Height,
 	float InnerRadius,
 	float VortexAngularSpeed,
-	bool bEnabled)
+	bool bEnabled,
+	float TopRadius,
+	float MoveLength)
 {
 	if (!ECSWorld || !Handle.IsValid()) return;
 
@@ -302,6 +304,9 @@ void UWindSubsystem::UpdateWindMotor(
 		FWindMotorData* Data = Entity.get_mut<FWindMotorData>();
 		if (Data)
 		{
+			// Store previous position before updating (for Moving motor)
+			Data->PreviousPosition = Data->WorldPosition;
+
 			Data->WorldPosition = Position;
 			Data->Direction = Direction.GetSafeNormal();
 			Data->Strength = Strength;
@@ -309,6 +314,8 @@ void UWindSubsystem::UpdateWindMotor(
 			Data->InnerRadius = InnerRadius;
 			Data->Height = Height;
 			Data->VortexAngularSpeed = VortexAngularSpeed;
+			Data->TopRadius = TopRadius;
+			Data->MoveLength = MoveLength;
 			Data->Shape = static_cast<uint8>(Shape);
 			Data->EmissionType = static_cast<uint8>(EmissionType);
 			Data->bEnabled = bEnabled ? 1 : 0;

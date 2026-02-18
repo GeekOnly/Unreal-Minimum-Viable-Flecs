@@ -60,7 +60,9 @@ public:
 		float Height = 0.f,
 		float InnerRadius = 0.f,
 		float VortexAngularSpeed = 0.f,
-		bool bEnabled = true);
+		bool bEnabled = true,
+		float TopRadius = 0.f,
+		float MoveLength = 0.f);
 
 	UFUNCTION(BlueprintCallable, Category = "Wind3D")
 	void UnregisterWindMotor(FWindEntityHandle Handle);

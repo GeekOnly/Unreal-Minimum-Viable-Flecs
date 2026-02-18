@@ -102,14 +102,45 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 {
 	if (!Motor.bEnabled) return;
 
-	const float RadiusSq = Motor.Radius * Motor.Radius;
+	const EWindMotorShape MotorShape = static_cast<EWindMotorShape>(Motor.Shape);
+	const EWindEmissionType Emission = static_cast<EWindEmissionType>(Motor.EmissionType);
 
-	// Find bounding box of motor in grid space
-	const FVector MotorMin = Motor.WorldPosition - FVector(Motor.Radius);
-	const FVector MotorMax = Motor.WorldPosition + FVector(Motor.Radius);
+	// Compute bounding box extent based on shape
+	float BoundsExtent = Motor.Radius;
+	if (MotorShape == EWindMotorShape::Cylinder)
+	{
+		const float EffTopRadius = Motor.TopRadius > 0.f ? Motor.TopRadius : Motor.Radius;
+		BoundsExtent = FMath::Max3(Motor.Radius, EffTopRadius, Motor.Height * 0.5f);
+	}
+	if (Emission == EWindEmissionType::Moving)
+	{
+		// Extend bounds to cover the trail from previous position
+		BoundsExtent = FMath::Max(BoundsExtent, Motor.MoveLength + Motor.Radius);
+	}
 
-	const FIntVector CellMin = WorldToCell(MotorMin);
-	const FIntVector CellMax = WorldToCell(MotorMax);
+	// Bounding box in world space
+	FVector BoundsMin, BoundsMax;
+	if (Emission == EWindEmissionType::Moving)
+	{
+		// Union of current + previous position
+		BoundsMin = FVector::Min(Motor.WorldPosition, Motor.PreviousPosition) - FVector(Motor.Radius);
+		BoundsMax = FVector::Max(Motor.WorldPosition, Motor.PreviousPosition) + FVector(Motor.Radius);
+	}
+	else if (MotorShape == EWindMotorShape::Cylinder)
+	{
+		const FVector HalfAxis = Motor.Direction * Motor.Height * 0.5f;
+		const float MaxR = FMath::Max(Motor.Radius, Motor.TopRadius > 0.f ? Motor.TopRadius : Motor.Radius);
+		BoundsMin = Motor.WorldPosition - FVector(MaxR) - HalfAxis.GetAbs();
+		BoundsMax = Motor.WorldPosition + FVector(MaxR) + HalfAxis.GetAbs();
+	}
+	else
+	{
+		BoundsMin = Motor.WorldPosition - FVector(Motor.Radius);
+		BoundsMax = Motor.WorldPosition + FVector(Motor.Radius);
+	}
+
+	const FIntVector CellMin = WorldToCell(BoundsMin);
+	const FIntVector CellMax = WorldToCell(BoundsMax);
 
 	const int32 MinX = FMath::Clamp(CellMin.X, 0, SizeX - 1);
 	const int32 MinY = FMath::Clamp(CellMin.Y, 0, SizeY - 1);
@@ -118,6 +149,8 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 	const int32 MaxY = FMath::Clamp(CellMax.Y, 0, SizeY - 1);
 	const int32 MaxZ = FMath::Clamp(CellMax.Z, 0, SizeZ - 1);
 
+	const float RadiusSq = Motor.Radius * Motor.Radius;
+
 	for (int32 Z = MinZ; Z <= MaxZ; Z++)
 	{
 		for (int32 Y = MinY; Y <= MaxY; Y++)
@@ -125,32 +158,106 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 			for (int32 X = MinX; X <= MaxX; X++)
 			{
 				const FVector CellCenter = CellToWorld(X, Y, Z);
-				const FVector ToCell = CellCenter - Motor.WorldPosition;
-				const float DistSq = ToCell.SizeSquared();
 
-				if (DistSq > RadiusSq) continue;
+				// --- Shape containment test + falloff ---
+				float Falloff = 0.f;
 
-				const float Dist = FMath::Sqrt(DistSq);
-				// Smooth falloff: 1 at center, 0 at radius
-				const float Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / Motor.Radius);
+				if (Emission == EWindEmissionType::Moving)
+				{
+					// Moving motor: capsule along movement path
+					// Project cell onto line segment from PreviousPosition to WorldPosition
+					const FVector MoveDir = Motor.WorldPosition - Motor.PreviousPosition;
+					const float MoveLenSq = MoveDir.SizeSquared();
 
+					FVector ClosestPoint;
+					if (MoveLenSq < SMALL_NUMBER)
+					{
+						ClosestPoint = Motor.WorldPosition;
+					}
+					else
+					{
+						const float T = FMath::Clamp(
+							FVector::DotProduct(CellCenter - Motor.PreviousPosition, MoveDir) / MoveLenSq,
+							0.f, 1.f);
+						ClosestPoint = Motor.PreviousPosition + MoveDir * T;
+					}
+
+					const float DistSq = (CellCenter - ClosestPoint).SizeSquared();
+					if (DistSq > RadiusSq) continue;
+
+					const float Dist = FMath::Sqrt(DistSq);
+					Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / Motor.Radius);
+				}
+				else if (MotorShape == EWindMotorShape::Cylinder)
+				{
+					// Cylinder shape: project onto axis, check height + interpolated radius
+					const FVector ToCell = CellCenter - Motor.WorldPosition;
+					const float AxisProj = FVector::DotProduct(ToCell, Motor.Direction);
+					const float HalfHeight = Motor.Height * 0.5f;
+
+					if (FMath::Abs(AxisProj) > HalfHeight) continue;
+
+					// Interpolated radius along axis: bottom (Radius) to top (TopRadius)
+					const float EffTopRadius = Motor.TopRadius > 0.f ? Motor.TopRadius : Motor.Radius;
+					const float HeightFrac = (AxisProj + HalfHeight) / Motor.Height; // 0 = bottom, 1 = top
+					const float LocalRadius = FMath::Lerp(Motor.Radius, EffTopRadius, HeightFrac);
+
+					// Radial distance (perpendicular to axis)
+					const FVector RadialVec = ToCell - Motor.Direction * AxisProj;
+					const float RadialDist = RadialVec.Size();
+
+					if (RadialDist > LocalRadius) continue;
+
+					Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - RadialDist / LocalRadius);
+				}
+				else
+				{
+					// Sphere shape (default)
+					const float DistSq = (CellCenter - Motor.WorldPosition).SizeSquared();
+					if (DistSq > RadiusSq) continue;
+
+					const float Dist = FMath::Sqrt(DistSq);
+					Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / Motor.Radius);
+				}
+
+				// --- Force direction based on emission type ---
 				FVector Force = FVector::ZeroVector;
-				const EWindEmissionType Emission = static_cast<EWindEmissionType>(Motor.EmissionType);
+				const FVector ToCell = CellCenter - Motor.WorldPosition;
 
 				switch (Emission)
 				{
 				case EWindEmissionType::Directional:
 					Force = Motor.Direction * Motor.Strength * Falloff;
 					break;
+
 				case EWindEmissionType::Omni:
 					Force = ToCell.GetSafeNormal() * Motor.Strength * Falloff;
-                    // UE_LOG(LogTemp, Warning, TEXT("Omni Force: %s"), *Force.ToString());
 					break;
+
 				case EWindEmissionType::Vortex:
 					{
 						const FVector CrossDir = FVector::CrossProduct(Motor.Direction, ToCell.GetSafeNormal());
 						Force = CrossDir * Motor.Strength * Motor.VortexAngularSpeed * Falloff;
-                        // UE_LOG(LogTemp, Warning, TEXT("Vortex Force: %s"), *Force.ToString());
+					}
+					break;
+
+				case EWindEmissionType::Moving:
+					{
+						// GoW-style: blend radial push + movement direction
+						const FVector MoveDir = (Motor.WorldPosition - Motor.PreviousPosition).GetSafeNormal();
+						const FVector RadialDir = ToCell.GetSafeNormal();
+
+						// If object barely moved, fallback to omni
+						FVector BlowDir;
+						if (MoveDir.SizeSquared() < SMALL_NUMBER)
+						{
+							BlowDir = RadialDir;
+						}
+						else
+						{
+							BlowDir = (RadialDir + MoveDir).GetSafeNormal();
+						}
+						Force = BlowDir * Motor.Strength * Falloff;
 					}
 					break;
 				}
