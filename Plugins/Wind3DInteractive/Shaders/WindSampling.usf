@@ -1,0 +1,160 @@
+// WindSampling.usf
+// Wind3DInteractive plugin - material sampling functions
+//
+// Usage in Material Custom Expression:
+//   #include "/Plugin/Wind3DInteractive/WindSampling.usf"
+//   return SampleWind(WindAtlas, WindAtlasSampler, WorldPos, VolumeOrigin, VolumeSize, GridCells);
+//
+// Inputs:
+//   WindAtlas        - Texture2D parameter bound via Blueprint
+//   WindAtlasSampler - auto-provided sampler
+//   WorldPos         - float3 from AbsoluteWorldPosition node
+//   VolumeOrigin     - float3 from MPC "WindVolumeOrigin"
+//   VolumeSize       - float3 from MPC "WindVolumeSize" (total world extents)
+//   GridCells        - float3 from MPC "WindGridCells" (SizeX, SizeY, SizeZ)
+//
+// Output: float4 (xyz = velocity in cm/s, w = turbulence [0,1])
+
+// Velocity encoding constant (must match FWindTextureManager::MaxWindSpeed)
+static const float WindMaxSpeed = 2000.0f;
+
+float3 DecodeWindVelocity(float4 EncodedTexel)
+{
+    return (EncodedTexel.rgb * 2.0f - 1.0f) * WindMaxSpeed;
+}
+
+float DecodeWindTurbulence(float4 EncodedTexel)
+{
+    return EncodedTexel.a;
+}
+
+// Convert world position to 2D atlas UV
+// Atlas layout: Z slices tiled horizontally
+// Atlas pixel (x, y) for cell (cx, cy, cz) = (cz * SizeX + cx, cy)
+float2 WindWorldToAtlasUV(
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 GridCells)
+{
+    // Normalized position in volume [0, 1]
+    float3 NormPos = saturate((WorldPos - VolumeOrigin) / max(VolumeSize, 0.001f));
+
+    // Continuous cell coordinates
+    float CellX = NormPos.x * GridCells.x;
+    float CellY = NormPos.y * GridCells.y;
+    float CellZ = NormPos.z * GridCells.z;
+
+    // Clamp to valid cell range
+    CellX = clamp(CellX, 0.0f, GridCells.x - 0.001f);
+    CellY = clamp(CellY, 0.0f, GridCells.y - 0.001f);
+    CellZ = clamp(CellZ, 0.0f, GridCells.z - 0.001f);
+
+    // Z slice (integer)
+    float ZSlice = floor(CellZ);
+
+    // Atlas pixel coordinate
+    float AtlasWidth = GridCells.x * GridCells.z;
+    float AtlasHeight = GridCells.y;
+
+    float PixelX = ZSlice * GridCells.x + CellX;
+    float PixelY = CellY;
+
+    // UV with half-pixel offset for texel center sampling
+    float2 UV;
+    UV.x = (PixelX + 0.5f) / AtlasWidth;
+    UV.y = (PixelY + 0.5f) / AtlasHeight;
+
+    return UV;
+}
+
+// Sample wind with Z-interpolation between two slices
+float4 SampleWindRaw(
+    Texture2D WindAtlas,
+    SamplerState WindAtlasSampler,
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 GridCells)
+{
+    float3 NormPos = (WorldPos - VolumeOrigin) / max(VolumeSize, 0.001f);
+    float CellZ = clamp(NormPos.z * GridCells.z - 0.5f, 0.0f, GridCells.z - 1.001f);
+
+    float ZLow = floor(CellZ);
+    float ZHigh = min(ZLow + 1.0f, GridCells.z - 1.0f);
+    float ZFrac = CellZ - ZLow;
+
+    // Sample lower Z slice
+    float3 PosLow = WorldPos;
+    float AtlasWidth = GridCells.x * GridCells.z;
+    float AtlasHeight = GridCells.y;
+
+    float CellX = clamp(NormPos.x * GridCells.x, 0.0f, GridCells.x - 0.001f);
+    float CellY = clamp(NormPos.y * GridCells.y, 0.0f, GridCells.y - 0.001f);
+
+    float2 UVLow;
+    UVLow.x = (ZLow * GridCells.x + CellX + 0.5f) / AtlasWidth;
+    UVLow.y = (CellY + 0.5f) / AtlasHeight;
+
+    float2 UVHigh;
+    UVHigh.x = (ZHigh * GridCells.x + CellX + 0.5f) / AtlasWidth;
+    UVHigh.y = (CellY + 0.5f) / AtlasHeight;
+
+    float4 TexelLow = Texture2DSampleLevel(WindAtlas, WindAtlasSampler, UVLow, 0);
+    float4 TexelHigh = Texture2DSampleLevel(WindAtlas, WindAtlasSampler, UVHigh, 0);
+
+    return lerp(TexelLow, TexelHigh, ZFrac);
+}
+
+// Main sampling function
+// Returns float4: xyz = wind velocity (cm/s), w = turbulence [0,1]
+float4 SampleWind(
+    Texture2D WindAtlas,
+    SamplerState WindAtlasSampler,
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 GridCells)
+{
+    // Check if position is inside volume with edge fade
+    float3 NormPos = (WorldPos - VolumeOrigin) / max(VolumeSize, 0.001f);
+    float3 DistFromEdge = min(NormPos, 1.0f - NormPos);
+    float EdgeFade = saturate(min(min(DistFromEdge.x, DistFromEdge.y), DistFromEdge.z) * 10.0f);
+
+    // Outside volume check
+    if (any(NormPos < -0.05f) || any(NormPos > 1.05f))
+        return float4(0, 0, 0, 0);
+
+    float4 Texel = SampleWindRaw(WindAtlas, WindAtlasSampler, WorldPos, VolumeOrigin, VolumeSize, GridCells);
+
+    float3 Velocity = DecodeWindVelocity(Texel) * EdgeFade;
+    float Turbulence = DecodeWindTurbulence(Texel) * EdgeFade;
+
+    return float4(Velocity, Turbulence);
+}
+
+// Simplified sampling without Z interpolation (faster)
+float4 SampleWindFast(
+    Texture2D WindAtlas,
+    SamplerState WindAtlasSampler,
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 GridCells)
+{
+    float3 NormPos = (WorldPos - VolumeOrigin) / max(VolumeSize, 0.001f);
+
+    if (any(NormPos < -0.05f) || any(NormPos > 1.05f))
+        return float4(0, 0, 0, 0);
+
+    float3 DistFromEdge = min(NormPos, 1.0f - NormPos);
+    float EdgeFade = saturate(min(min(DistFromEdge.x, DistFromEdge.y), DistFromEdge.z) * 10.0f);
+
+    float2 UV = WindWorldToAtlasUV(WorldPos, VolumeOrigin, VolumeSize, GridCells);
+    float4 Texel = Texture2DSampleLevel(WindAtlas, WindAtlasSampler, UV, 0);
+
+    float3 Velocity = DecodeWindVelocity(Texel) * EdgeFade;
+    float Turbulence = DecodeWindTurbulence(Texel) * EdgeFade;
+
+    return float4(Velocity, Turbulence);
+}

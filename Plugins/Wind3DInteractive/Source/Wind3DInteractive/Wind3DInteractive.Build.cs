@@ -16,7 +16,9 @@ public class Wind3DInteractive : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"InputCore"
+			"InputCore",
+			"RHI",
+			"RenderCore"
 		});
 
 		PublicIncludePaths.AddRange(new string[]

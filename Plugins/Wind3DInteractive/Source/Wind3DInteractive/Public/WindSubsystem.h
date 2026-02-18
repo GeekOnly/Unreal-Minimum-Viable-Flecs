@@ -4,6 +4,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "WindGrid.h"
 #include "WindTypes.h"
+#include "WindTextureManager.h"
 #include "flecs.h"
 #include "WindSubsystem.generated.h"
 
@@ -88,6 +89,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Wind3D")
 	void SetGridCenterActor(AActor* Actor);
 
+	// --- Material Integration ---
+
+	/** Get the wind atlas texture for binding to materials. */
+	UFUNCTION(BlueprintPure, Category = "Wind3D|Material")
+	UTexture2D* GetWindAtlasTexture() const;
+
+	/** Get the wind Material Parameter Collection for referencing in materials. */
+	UFUNCTION(BlueprintPure, Category = "Wind3D|Material")
+	UMaterialParameterCollection* GetWindMPC() const;
+
+	/** Convenience: bind wind atlas texture to a dynamic material instance. */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Material")
+	void BindWindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName = "WindAtlas");
+
 	// --- C++ access ---
 	flecs::world* GetEcsWorld() const { return ECSWorld; }
 	const FWindGrid& GetWindGrid() const { return WindGrid; }
@@ -97,6 +112,10 @@ public:
 	float DiffusionRate = 0.15f;
 	float AdvectionForce = 0.05f;
 	float DecayRate = 2.f;
+
+	// --- Material Integration Parameters ---
+	float OverallPower = 1.0f;
+	bool bEnableMaterialIntegration = true;
 
 	// --- World Wind Parameters ---
 	bool bEnableWorldWind = false;
@@ -128,4 +147,8 @@ private:
 
 	// Track HISM components that need MarkRenderStateDirty after ECS progress
 	TSet<UHierarchicalInstancedStaticMeshComponent*> DirtyHISMs;
+
+	// Material integration
+	FWindTextureManager TextureManager;
+	bool bTextureManagerInitialized = false;
 };

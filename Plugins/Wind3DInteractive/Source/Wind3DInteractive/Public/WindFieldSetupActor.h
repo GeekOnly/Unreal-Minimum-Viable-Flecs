@@ -61,6 +61,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bAutoStartDebug = true;
 
+	// --- Material Integration ---
+
+	/** Overall wind power multiplier applied in material shader. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Material", meta = (ClampMin = "0.0"))
+	float OverallPower = 1.0f;
+
+	/** Enable wind data output to materials (texture atlas + MPC updated each frame). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Material")
+	bool bEnableMaterialIntegration = true;
+
 	// --- Simulation Parameters ---
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0.0", ClampMax = "1.0"))

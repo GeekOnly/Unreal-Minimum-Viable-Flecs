@@ -2,6 +2,7 @@
 #include "WindComponents.h"
 #include "Wind3DInteractiveModule.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "DrawDebugHelpers.h"
 
 static TAutoConsoleVariable<int32> CVarShowWindDebug(
@@ -42,6 +43,9 @@ void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UWindSubsystem::Deinitialize()
 {
+	TextureManager.Shutdown();
+	bTextureManagerInitialized = false;
+
 	if (ECSWorld)
 	{
 		delete ECSWorld;
@@ -117,6 +121,17 @@ void UWindSubsystem::Tick(float DeltaTime)
 
 		// 5. Advection — wind carries velocity downstream
 		WindGrid.Advect(AdvectionForce, DeltaTime);
+
+		// 6. Material Integration — update texture + MPC
+		if (bEnableMaterialIntegration)
+		{
+			if (!bTextureManagerInitialized)
+			{
+				TextureManager.Initialize(GetWorld(), WindGrid.SizeX, WindGrid.SizeY, WindGrid.SizeZ);
+				bTextureManagerInitialized = true;
+			}
+			TextureManager.UpdateFromGrid(WindGrid, AmbientWind, OverallPower);
+		}
 
 		// Batch mark render state dirty for all affected HISMs
 		for (auto* HISM : DirtyHISMs)
@@ -413,4 +428,21 @@ void UWindSubsystem::DrawDebugWind()
     {
         UE_LOG(LogWind3D, Verbose, TEXT("DrawDebugWind: Drew %d arrows"), DrawnCount);
     }
+}
+
+// --- Material Integration ---
+
+UTexture2D* UWindSubsystem::GetWindAtlasTexture() const
+{
+	return TextureManager.GetWindAtlasTexture();
+}
+
+UMaterialParameterCollection* UWindSubsystem::GetWindMPC() const
+{
+	return TextureManager.GetWindMPC();
+}
+
+void UWindSubsystem::BindWindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName)
+{
+	TextureManager.BindToMaterial(MID, TextureParamName);
 }

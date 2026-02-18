@@ -67,6 +67,10 @@ void AWindFieldSetupActor::BeginPlay()
         WindSys->WorldWindNoiseFrequency = WorldWindNoiseFrequency;
         WindSys->WorldWindSpeedNoiseAmplitude = WorldWindSpeedNoiseAmplitude;
 
+        // Material integration
+        WindSys->OverallPower = OverallPower;
+        WindSys->bEnableMaterialIntegration = bEnableMaterialIntegration;
+
         // Set grid center actor (for follow-player)
         if (AActor* Center = CenterActor.Get())
         {
