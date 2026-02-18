@@ -74,6 +74,11 @@ void AWindFieldSetupActor::BeginPlay()
         WindSys->OverallPower = OverallPower;
         WindSys->bEnableMaterialIntegration = bEnableMaterialIntegration;
 
+        // Obstacle detection
+        WindSys->bEnableObstacles = bEnableObstacles;
+        WindSys->ObstacleUpdateInterval = ObstacleUpdateInterval;
+        WindSys->ObstacleChannel = ObstacleChannel;
+
         // Set grid center actor (for follow-player)
         if (AActor* Center = CenterActor.Get())
         {

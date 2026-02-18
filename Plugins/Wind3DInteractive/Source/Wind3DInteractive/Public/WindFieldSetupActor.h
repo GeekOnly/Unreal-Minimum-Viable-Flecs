@@ -94,6 +94,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Simulation", meta = (ClampMin = "0", ClampMax = "8"))
 	int32 BoundaryFadeCells = 2;
 
+	// --- Obstacle Detection ---
+
+	/** Enable wind-obstacle collision (marks grid cells as solid via physics overlap). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Obstacles")
+	bool bEnableObstacles = false;
+
+	/** How many frames between obstacle detection updates. Higher = cheaper. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Obstacles", meta = (ClampMin = "1", ClampMax = "30", EditCondition = "bEnableObstacles"))
+	int32 ObstacleUpdateInterval = 5;
+
+	/** Collision channel used for obstacle detection. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Obstacles", meta = (EditCondition = "bEnableObstacles"))
+	TEnumAsByte<ECollisionChannel> ObstacleChannel = ECC_WorldStatic;
+
 	/** Optional: actor for the grid to follow (e.g. player pawn). Leave None for static grid. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Grid")
 	TSoftObjectPtr<AActor> CenterActor;

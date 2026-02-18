@@ -1,6 +1,5 @@
 #include "Wind3DInteractiveModule.h"
 #include "Modules/ModuleManager.h"
-#include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "ShaderCore.h"
 
@@ -13,12 +12,18 @@ void FWind3DInteractiveModule::StartupModule()
 	UE_LOG(LogWind3D, Log, TEXT("Wind3DInteractive module has started."));
 
 	// Register shader directory: /Plugin/Wind3DInteractive/ -> <PluginDir>/Shaders/
-	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("Wind3DInteractive"));
-	if (Plugin.IsValid())
+	// Use plugin's base directory relative to the module file location
+	const FString PluginBaseDir = FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("Wind3DInteractive"));
+	const FString ShaderDir = FPaths::Combine(PluginBaseDir, TEXT("Shaders"));
+
+	if (FPaths::DirectoryExists(ShaderDir))
 	{
-		const FString ShaderDir = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"));
 		AddShaderSourceDirectoryMapping(TEXT("/Plugin/Wind3DInteractive"), ShaderDir);
 		UE_LOG(LogWind3D, Log, TEXT("Registered shader directory: %s"), *ShaderDir);
+	}
+	else
+	{
+		UE_LOG(LogWind3D, Warning, TEXT("Shader directory not found: %s"), *ShaderDir);
 	}
 }
 

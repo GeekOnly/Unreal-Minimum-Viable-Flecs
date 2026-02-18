@@ -110,6 +110,9 @@ void UWindSubsystem::Tick(float DeltaTime)
 		// 1. Grid Offset — shift data when center actor moves
 		UpdateGridOffset();
 
+		// 1.5 Occupancy — mark cells blocked by collision
+		UpdateOccupancy();
+
 		// 2. Decay toward ambient (now with rotating direction)
 		WindGrid.DecayToAmbient(AmbientWind, DecayRate, DeltaTime);
 
@@ -257,6 +260,41 @@ void UWindSubsystem::UpdateGridOffset()
 
 	// Update previous center (only consume the cell-snapped portion)
 	PreviousGridCenter += OriginShift;
+}
+
+void UWindSubsystem::UpdateOccupancy()
+{
+	if (!bEnableObstacles) return;
+
+	// Amortize: only update every N frames
+	if (++ObstacleFrameCounter < ObstacleUpdateInterval) return;
+	ObstacleFrameCounter = 0;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	WindGrid.ClearSolids();
+
+	const FVector HalfCell(WindGrid.CellSize * 0.5f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(WindOccupancy), false);
+
+	for (int32 Z = 0; Z < WindGrid.SizeZ; Z++)
+	{
+		for (int32 Y = 0; Y < WindGrid.SizeY; Y++)
+		{
+			for (int32 X = 0; X < WindGrid.SizeX; X++)
+			{
+				const FVector CellCenter = WindGrid.CellToWorld(X, Y, Z);
+
+				if (World->OverlapBlockingTestByChannel(
+					CellCenter, FQuat::Identity, ObstacleChannel,
+					FCollisionShape::MakeBox(HalfCell), Params))
+				{
+					WindGrid.MarkSolid(X, Y, Z);
+				}
+			}
+		}
+	}
 }
 
 FWindEntityHandle UWindSubsystem::RegisterWindMotor(

@@ -20,6 +20,7 @@ struct WIND3DINTERACTIVE_API FWindGrid
 	TArray<FVector> Velocities;
 	TArray<FVector> VelocitiesBack; // back buffer for ping-pong
 	TArray<float>   Turbulences;
+	TArray<uint8>   Solids;         // 1 = solid (blocked by collision), 0 = empty
 
 	void Initialize();
 	void Reset();
@@ -43,6 +44,11 @@ struct WIND3DINTERACTIVE_API FWindGrid
 	void ShiftData(FIntVector CellOffset, FVector AmbientWind);
 
 	int32 GetTotalCells() const { return SizeX * SizeY * SizeZ; }
+
+	// Occupancy grid (obstacle detection)
+	void ClearSolids();
+	void MarkSolid(int32 X, int32 Y, int32 Z);
+	bool IsSolid(int32 X, int32 Y, int32 Z) const;
 
 	int32 CellIndex(int32 X, int32 Y, int32 Z) const;
 	bool  IsInBounds(int32 X, int32 Y, int32 Z) const;

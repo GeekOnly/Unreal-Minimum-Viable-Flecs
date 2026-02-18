@@ -8,6 +8,7 @@ void FWindGrid::Initialize()
 	Velocities.SetNumZeroed(Total);
 	VelocitiesBack.SetNumZeroed(Total);
 	Turbulences.SetNumZeroed(Total);
+	Solids.SetNumZeroed(Total);
 }
 
 void FWindGrid::Reset()
@@ -15,6 +16,26 @@ void FWindGrid::Reset()
 	FMemory::Memzero(Velocities.GetData(), Velocities.Num() * sizeof(FVector));
 	FMemory::Memzero(VelocitiesBack.GetData(), VelocitiesBack.Num() * sizeof(FVector));
 	FMemory::Memzero(Turbulences.GetData(), Turbulences.Num() * sizeof(float));
+	FMemory::Memzero(Solids.GetData(), Solids.Num() * sizeof(uint8));
+}
+
+void FWindGrid::ClearSolids()
+{
+	FMemory::Memzero(Solids.GetData(), Solids.Num() * sizeof(uint8));
+}
+
+void FWindGrid::MarkSolid(int32 X, int32 Y, int32 Z)
+{
+	if (IsInBounds(X, Y, Z))
+	{
+		Solids[CellIndex(X, Y, Z)] = 1;
+	}
+}
+
+bool FWindGrid::IsSolid(int32 X, int32 Y, int32 Z) const
+{
+	if (!IsInBounds(X, Y, Z)) return false;
+	return Solids[CellIndex(X, Y, Z)] != 0;
 }
 
 void FWindGrid::SwapBuffers()
@@ -263,6 +284,8 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 				}
 
 				const int32 Idx = CellIndex(X, Y, Z);
+				if (Solids[Idx]) continue; // Don't inject into solid cells
+
 				Velocities[Idx] += Force * DeltaTime;
 
 				// Clamp velocity magnitude
@@ -286,6 +309,12 @@ void FWindGrid::DecayToAmbient(FVector AmbientWind, float DecayRate, float Delta
 
 	for (int32 I = 0; I < Velocities.Num(); I++)
 	{
+		if (Solids[I])
+		{
+			Velocities[I] = FVector::ZeroVector;
+			Turbulences[I] = 0.f;
+			continue;
+		}
 		Velocities[I] = FMath::Lerp(Velocities[I], AmbientWind, Alpha);
 		Turbulences[I] = FMath::Lerp(Turbulences[I], 0.f, TurbDecay);
 	}
@@ -344,15 +373,30 @@ void FWindGrid::Diffuse(float DiffusionRate, float DeltaTime, int32 Iterations)
 				for (int32 X = 0; X < SizeX; X++)
 				{
 					const int32 Idx = CellIndex(X, Y, Z);
+
+					// Solid cells stay at zero velocity
+					if (Solids[Idx])
+					{
+						VelocitiesBack[Idx] = FVector::ZeroVector;
+						continue;
+					}
+
 					const FVector& Center = Velocities[Idx];
 
-					// Sample 6 neighbors (clamp at boundaries)
-					const FVector Xp = Velocities[CellIndex(FMath::Min(X + 1, SizeX - 1), Y, Z)];
-					const FVector Xn = Velocities[CellIndex(FMath::Max(X - 1, 0), Y, Z)];
-					const FVector Yp = Velocities[CellIndex(X, FMath::Min(Y + 1, SizeY - 1), Z)];
-					const FVector Yn = Velocities[CellIndex(X, FMath::Max(Y - 1, 0), Z)];
-					const FVector Zp = Velocities[CellIndex(X, Y, FMath::Min(Z + 1, SizeZ - 1))];
-					const FVector Zn = Velocities[CellIndex(X, Y, FMath::Max(Z - 1, 0))];
+					// Sample 6 neighbors — if neighbor is solid, reflect (use Center instead)
+					const int32 XpI = CellIndex(FMath::Min(X + 1, SizeX - 1), Y, Z);
+					const int32 XnI = CellIndex(FMath::Max(X - 1, 0), Y, Z);
+					const int32 YpI = CellIndex(X, FMath::Min(Y + 1, SizeY - 1), Z);
+					const int32 YnI = CellIndex(X, FMath::Max(Y - 1, 0), Z);
+					const int32 ZpI = CellIndex(X, Y, FMath::Min(Z + 1, SizeZ - 1));
+					const int32 ZnI = CellIndex(X, Y, FMath::Max(Z - 1, 0));
+
+					const FVector Xp = Solids[XpI] ? Center : Velocities[XpI];
+					const FVector Xn = Solids[XnI] ? Center : Velocities[XnI];
+					const FVector Yp = Solids[YpI] ? Center : Velocities[YpI];
+					const FVector Yn = Solids[YnI] ? Center : Velocities[YnI];
+					const FVector Zp = Solids[ZpI] ? Center : Velocities[ZpI];
+					const FVector Zn = Solids[ZnI] ? Center : Velocities[ZnI];
 
 					const FVector Laplacian = (Xp + Xn + Yp + Yn + Zp + Zn) - Center * 6.f;
 					VelocitiesBack[Idx] = Center + Laplacian * Alpha;
@@ -387,6 +431,8 @@ void FWindGrid::Advect(float AdvectionForce, float DeltaTime, bool bForwardPass)
 				for (int32 X = 0; X < SizeX; X++)
 				{
 					const int32 Idx = CellIndex(X, Y, Z);
+					if (Solids[Idx]) continue; // Don't splat from solid cells
+
 					const FVector& Vel = Velocities[Idx];
 
 					// Target position: where does this cell's wind go?
@@ -414,6 +460,7 @@ void FWindGrid::Advect(float AdvectionForce, float DeltaTime, bool bForwardPass)
 								const int32 Cz = Z0 + Dz;
 
 								if (!IsInBounds(Cx, Cy, Cz)) continue;
+								if (Solids[CellIndex(Cx, Cy, Cz)]) continue; // Don't splat into solid
 
 								const float Wx = Dx ? Fx : (1.f - Fx);
 								const float Wy = Dy ? Fy : (1.f - Fy);
@@ -455,6 +502,14 @@ void FWindGrid::Advect(float AdvectionForce, float DeltaTime, bool bForwardPass)
 			for (int32 X = 0; X < SizeX; X++)
 			{
 				const int32 Idx = CellIndex(X, Y, Z);
+
+				// Solid cells stay at zero
+				if (Solids[Idx])
+				{
+					VelocitiesBack[Idx] = FVector::ZeroVector;
+					continue;
+				}
+
 				const FVector& Vel = Velocities[Idx];
 
 				// Backtrace: where did this cell's wind come from?

@@ -122,6 +122,11 @@ public:
 	float OverallPower = 1.0f;
 	bool bEnableMaterialIntegration = true;
 
+	// --- Obstacle Detection Parameters ---
+	bool bEnableObstacles = false;
+	int32 ObstacleUpdateInterval = 5;
+	TEnumAsByte<ECollisionChannel> ObstacleChannel = ECC_WorldStatic;
+
 	// --- World Wind Parameters ---
 	bool bEnableWorldWind = false;
 	float WorldWindSpeed = 200.f;
@@ -141,9 +146,13 @@ private:
 	void DrawDebugWind();
 	void UpdateGridOffset();
 	void UpdateWorldWind(float DeltaTime);
+	void UpdateOccupancy();
 
 	// World wind state
 	float WorldWindTime = 0.f;
+
+	// Obstacle detection state
+	int32 ObstacleFrameCounter = 0;
 
 	// Grid-follow state
 	TWeakObjectPtr<AActor> GridCenterActor;
