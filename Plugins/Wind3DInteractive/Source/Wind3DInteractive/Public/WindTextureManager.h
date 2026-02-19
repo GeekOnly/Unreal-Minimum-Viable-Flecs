@@ -2,18 +2,18 @@
 
 #include "CoreMinimal.h"
 
-class UTexture2D;
+class UVolumeTexture;
 class UMaterialParameterCollection;
 class UMaterialInstanceDynamic;
 class UWorld;
 struct IWindSolver;
 
 /**
- * Manages the wind data texture (2D atlas of Z slices) and Material Parameter Collection.
+ * Manages the wind 3D volume texture and Material Parameter Collection.
  * Owned by UWindSubsystem. Not a UObject — plain C++ class.
  *
  * Each frame after simulation: encodes IWindSolver velocities into a staging buffer,
- * uploads to GPU via render command, and updates MPC parameters.
+ * uploads to GPU as a UVolumeTexture, and updates MPC parameters.
  */
 class WIND3DINTERACTIVE_API FWindTextureManager
 {
@@ -21,7 +21,7 @@ public:
 	FWindTextureManager();
 	~FWindTextureManager();
 
-	/** Call once after grid dimensions are known. Creates texture + MPC. */
+	/** Call once after grid dimensions are known. Creates volume texture + MPC. */
 	void Initialize(UWorld* World, int32 SizeX, int32 SizeY, int32 SizeZ);
 
 	/** Call on subsystem shutdown. Releases texture + MPC. */
@@ -36,13 +36,13 @@ public:
 		const FVector& AmbientWind,
 		float OverallPower);
 
-	/** The atlas texture for material binding. */
-	UTexture2D* GetWindAtlasTexture() const { return WindAtlasTexture; }
+	/** The 3D volume texture for material binding. */
+	UVolumeTexture* GetWindVolumeTexture() const { return WindVolumeTexture; }
 
 	/** The MPC for material parameter reference. */
 	UMaterialParameterCollection* GetWindMPC() const { return WindMPC; }
 
-	/** Convenience: set wind atlas texture on a dynamic material instance. */
+	/** Convenience: set wind volume texture on a dynamic material instance. */
 	void BindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName) const;
 
 	bool IsInitialized() const { return bInitialized; }
@@ -51,7 +51,7 @@ public:
 	static constexpr float MaxWindSpeed = 2000.0f;
 
 private:
-	void CreateAtlasTexture();
+	void CreateVolumeTexture();
 	void CreateMPC();
 	void EncodeGridToStagingBuffer(const IWindSolver& Grid);
 	void UploadToGPU();
@@ -62,15 +62,11 @@ private:
 	int32 GridSizeY = 0;
 	int32 GridSizeZ = 0;
 
-	// Atlas dimensions (pixels)
-	int32 AtlasWidth = 0;   // SizeX * SizeZ
-	int32 AtlasHeight = 0;  // SizeY
-
-	// Staging buffer (game thread)
+	// Staging buffer (game thread) — flat 3D: index = Z * SizeX * SizeY + Y * SizeX + X
 	TArray<FFloat16Color> StagingBuffer;
 
 	// UE objects (rooted to prevent GC)
-	UTexture2D* WindAtlasTexture = nullptr;
+	UVolumeTexture* WindVolumeTexture = nullptr;
 	UMaterialParameterCollection* WindMPC = nullptr;
 
 	TWeakObjectPtr<UWorld> CachedWorld;

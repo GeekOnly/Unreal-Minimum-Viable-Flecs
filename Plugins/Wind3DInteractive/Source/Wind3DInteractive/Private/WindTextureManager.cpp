@@ -1,7 +1,7 @@
 #include "WindTextureManager.h"
 #include "IWindSolver.h"
 #include "Wind3DInteractiveModule.h"
-#include "Engine/Texture2D.h"
+#include "Engine/VolumeTexture.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -22,29 +22,31 @@ void FWindTextureManager::Initialize(UWorld* World, int32 SizeX, int32 SizeY, in
 	GridSizeX = SizeX;
 	GridSizeY = SizeY;
 	GridSizeZ = SizeZ;
-	AtlasWidth = SizeX * SizeZ;
-	AtlasHeight = SizeY;
 	CachedWorld = World;
 
-	StagingBuffer.SetNumZeroed(AtlasWidth * AtlasHeight);
+	const int32 TotalVoxels = SizeX * SizeY * SizeZ;
+	// Initialize with neutral wind (0.5, 0.5, 0.5, 0.0)
+	const FFloat16 Neutral = FFloat16(0.5f);
+	const FFloat16 Zero = FFloat16(0.0f);
+	StagingBuffer.Init(FFloat16Color(Neutral, Neutral, Neutral, Zero), TotalVoxels);
 
-	CreateAtlasTexture();
+	CreateVolumeTexture();
 	CreateMPC();
 
 	bInitialized = true;
 
-	UE_LOG(LogWind3D, Log, TEXT("WindTextureManager initialized: Atlas %dx%d (Grid %dx%dx%d)"),
-		AtlasWidth, AtlasHeight, GridSizeX, GridSizeY, GridSizeZ);
+	UE_LOG(LogWind3D, Log, TEXT("WindTextureManager initialized: VolumeTexture %dx%dx%d (%d voxels)"),
+		GridSizeX, GridSizeY, GridSizeZ, TotalVoxels);
 }
 
 void FWindTextureManager::Shutdown()
 {
 	if (!bInitialized) return;
 
-	if (WindAtlasTexture)
+	if (WindVolumeTexture)
 	{
-		WindAtlasTexture->RemoveFromRoot();
-		WindAtlasTexture = nullptr;
+		WindVolumeTexture->RemoveFromRoot();
+		WindVolumeTexture = nullptr;
 	}
 
 	if (WindMPC)
@@ -59,30 +61,40 @@ void FWindTextureManager::Shutdown()
 	UE_LOG(LogWind3D, Log, TEXT("WindTextureManager shut down."));
 }
 
-void FWindTextureManager::CreateAtlasTexture()
+void FWindTextureManager::CreateVolumeTexture()
 {
-	WindAtlasTexture = UTexture2D::CreateTransient(AtlasWidth, AtlasHeight, PF_FloatRGBA);
-	if (!WindAtlasTexture)
+	WindVolumeTexture = UVolumeTexture::CreateTransient(GridSizeX, GridSizeY, GridSizeZ, PF_FloatRGBA);
+	if (!WindVolumeTexture)
 	{
-		UE_LOG(LogWind3D, Error, TEXT("Failed to create wind atlas texture!"));
+		UE_LOG(LogWind3D, Error, TEXT("Failed to create wind volume texture!"));
 		return;
 	}
 
-	WindAtlasTexture->AddToRoot();
-	WindAtlasTexture->Filter = TF_Bilinear;
-	WindAtlasTexture->AddressX = TA_Clamp;
-	WindAtlasTexture->AddressY = TA_Clamp;
-	WindAtlasTexture->SRGB = 0;
-	WindAtlasTexture->CompressionSettings = TC_HDR;
-	WindAtlasTexture->MipGenSettings = TMGS_NoMipmaps;
+	WindVolumeTexture->AddToRoot();
+	WindVolumeTexture->Filter = TF_Bilinear;
+	WindVolumeTexture->SRGB = 0;
+	WindVolumeTexture->CompressionSettings = TC_HDR;
+	WindVolumeTexture->MipGenSettings = TMGS_NoMipmaps;
 
 	// Initialize mip data with zeros
-	FTexture2DMipMap& Mip = WindAtlasTexture->GetPlatformData()->Mips[0];
-	void* TextureData = Mip.BulkData.Lock(LOCK_READ_WRITE);
-	FMemory::Memzero(TextureData, AtlasWidth * AtlasHeight * sizeof(FFloat16Color));
-	Mip.BulkData.Unlock();
+	FTexturePlatformData* PlatformData = WindVolumeTexture->GetPlatformData();
+	if (PlatformData && PlatformData->Mips.Num() > 0)
+	{
+		FTexture2DMipMap& Mip = PlatformData->Mips[0];
+		// Initialize mip data with neutral wind (0.5, 0.5, 0.5, 0.0) -> Velocity (0, 0, 0)
+		FFloat16Color* DataPtr = (FFloat16Color*)TextureData;
+		const int32 NumVoxels = GridSizeX * GridSizeY * GridSizeZ;
+		const FFloat16 Neutral = FFloat16(0.5f);
+		const FFloat16 Zero = FFloat16(0.0f);
+		
+		for (int32 i = 0; i < NumVoxels; ++i)
+		{
+			DataPtr[i] = FFloat16Color(Neutral, Neutral, Neutral, Zero);
+		}
+		Mip.BulkData.Unlock();
+	}
 
-	WindAtlasTexture->UpdateResource();
+	WindVolumeTexture->UpdateResource();
 }
 
 void FWindTextureManager::CreateMPC()
@@ -111,7 +123,6 @@ void FWindTextureManager::CreateMPC()
 
 	AddVectorParam(FName(TEXT("WindVolumeOrigin")), FLinearColor(0, 0, 0, 0));
 	AddVectorParam(FName(TEXT("WindVolumeSize")), FLinearColor(3200, 3200, 1600, 0));
-	AddVectorParam(FName(TEXT("WindGridCells")), FLinearColor(16, 16, 8, 0));
 	AddVectorParam(FName(TEXT("WindAmbient")), FLinearColor(0, 0, 0, 0));
 
 	// Scalar parameters
@@ -143,13 +154,11 @@ void FWindTextureManager::EncodeGridToStagingBuffer(const IWindSolver& Grid)
 				const FVector& Vel = Velocities[GridIdx];
 				const float Turb = Turbulences.IsValidIndex(GridIdx) ? Turbulences[GridIdx] : 0.f;
 
-				// Atlas pixel: Z slices tiled horizontally
-				const int32 AtlasX = Z * GridSizeX + X;
-				const int32 AtlasY = Y;
-				const int32 AtlasIdx = AtlasY * AtlasWidth + AtlasX;
+				// Volume texture: flat 3D index = Z * SizeX * SizeY + Y * SizeX + X
+				const int32 TexIdx = Z * GridSizeX * GridSizeY + Y * GridSizeX + X;
 
 				// Encode velocity: [-MaxSpeed, +MaxSpeed] -> [0, 1]
-				FFloat16Color& Pixel = StagingBuffer[AtlasIdx];
+				FFloat16Color& Pixel = StagingBuffer[TexIdx];
 				Pixel.R = FFloat16(FMath::Clamp((Vel.X * InvMaxSpeed + 1.0f) * 0.5f, 0.0f, 1.0f));
 				Pixel.G = FFloat16(FMath::Clamp((Vel.Y * InvMaxSpeed + 1.0f) * 0.5f, 0.0f, 1.0f));
 				Pixel.B = FFloat16(FMath::Clamp((Vel.Z * InvMaxSpeed + 1.0f) * 0.5f, 0.0f, 1.0f));
@@ -161,10 +170,9 @@ void FWindTextureManager::EncodeGridToStagingBuffer(const IWindSolver& Grid)
 
 void FWindTextureManager::UploadToGPU()
 {
-	if (!WindAtlasTexture) return;
+	if (!WindVolumeTexture) return;
 
-	// For this tiny texture (e.g. 128x16 = 16 KB), BulkData lock + UpdateResource is simple and reliable.
-	FTexturePlatformData* PlatformData = WindAtlasTexture->GetPlatformData();
+	FTexturePlatformData* PlatformData = WindVolumeTexture->GetPlatformData();
 	if (!PlatformData || PlatformData->Mips.Num() == 0) return;
 
 	FTexture2DMipMap& Mip = PlatformData->Mips[0];
@@ -176,7 +184,7 @@ void FWindTextureManager::UploadToGPU()
 	}
 	Mip.BulkData.Unlock();
 
-	WindAtlasTexture->UpdateResource();
+	WindVolumeTexture->UpdateResource();
 }
 
 void FWindTextureManager::UpdateMPCParams(
@@ -204,10 +212,6 @@ void FWindTextureManager::UpdateMPCParams(
 	Inst->SetVectorParameterValue(
 		FName(TEXT("WindVolumeSize")),
 		FLinearColor(VolumeSize.X, VolumeSize.Y, VolumeSize.Z, 0));
-
-	Inst->SetVectorParameterValue(
-		FName(TEXT("WindGridCells")),
-		FLinearColor(Grid.GetSizeX(), Grid.GetSizeY(), Grid.GetSizeZ(), 0));
 
 	Inst->SetVectorParameterValue(
 		FName(TEXT("WindAmbient")),
@@ -243,8 +247,8 @@ void FWindTextureManager::UpdateFromGrid(
 
 void FWindTextureManager::BindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName) const
 {
-	if (MID && WindAtlasTexture)
+	if (MID && WindVolumeTexture)
 	{
-		MID->SetTextureParameterValue(TextureParamName, WindAtlasTexture);
+		MID->SetTextureParameterValue(TextureParamName, WindVolumeTexture);
 	}
 }

@@ -5,6 +5,7 @@
 #include "IWindSolver.h"
 #include "WindTypes.h"
 #include "WindTextureManager.h"
+#include "Engine/VolumeTexture.h"
 #include "flecs.h"
 #include "WindSubsystem.generated.h"
 
@@ -95,17 +96,17 @@ public:
 
 	// --- Material Integration ---
 
-	/** Get the wind atlas texture for binding to materials. */
+	/** Get the wind 3D volume texture for binding to materials. */
 	UFUNCTION(BlueprintPure, Category = "Wind3D|Material")
-	UTexture2D* GetWindAtlasTexture() const;
+	UVolumeTexture* GetWindVolumeTexture() const;
 
 	/** Get the wind Material Parameter Collection for referencing in materials. */
 	UFUNCTION(BlueprintPure, Category = "Wind3D|Material")
 	UMaterialParameterCollection* GetWindMPC() const;
 
-	/** Convenience: bind wind atlas texture to a dynamic material instance. */
+	/** Convenience: bind wind volume texture to a dynamic material instance. */
 	UFUNCTION(BlueprintCallable, Category = "Wind3D|Material")
-	void BindWindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName = "WindAtlas");
+	void BindWindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName = "WindVolume");
 
 	// --- C++ access ---
 	flecs::world* GetEcsWorld() const { return ECSWorld; }

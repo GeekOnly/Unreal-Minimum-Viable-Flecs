@@ -32,7 +32,11 @@ void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Create solver via factory (CPU module registers at startup)
 	check(FWindSolverFactory::CreateCPU.IsBound());
 	Solver = FWindSolverFactory::CreateCPU.Execute();
-	Solver->Initialize(16, 16, 8, 200.f);
+	// Double resolution: 32x32x16 (was 16x16x8)
+	Solver->Initialize(32, 32, 16, 200.f);
+	
+	// Initialize texture manager with grid dimensions
+	TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
 
 	RegisterComponents();
 	RegisterSystems();
@@ -547,9 +551,9 @@ void UWindSubsystem::DrawDebugWind()
 
 // --- Material Integration ---
 
-UTexture2D* UWindSubsystem::GetWindAtlasTexture() const
+UVolumeTexture* UWindSubsystem::GetWindVolumeTexture() const
 {
-	return TextureManager.GetWindAtlasTexture();
+	return TextureManager.GetWindVolumeTexture();
 }
 
 UMaterialParameterCollection* UWindSubsystem::GetWindMPC() const
