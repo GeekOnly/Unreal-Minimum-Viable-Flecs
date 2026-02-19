@@ -322,6 +322,7 @@ FWindEntityHandle UWindSubsystem::RegisterWindMotor(
 		.InnerRadius = 0.f,
 		.Height = 1000.f,
 		.VortexAngularSpeed = 1.f,
+		.PreviousPosition = Position, // Initialize to current pos — avoids ZeroVector capsule bug on first frame
 		.Shape = static_cast<uint8>(Shape),
 		.EmissionType = static_cast<uint8>(EmissionType),
 		.bEnabled = 1
@@ -358,7 +359,8 @@ void UWindSubsystem::UpdateWindMotor(
 	float VortexAngularSpeed,
 	bool bEnabled,
 	float TopRadius,
-	float MoveLength)
+	float MoveLength,
+	float ImpulseScale)
 {
 	if (!ECSWorld || !Handle.IsValid()) return;
 
@@ -380,6 +382,7 @@ void UWindSubsystem::UpdateWindMotor(
 			Data->VortexAngularSpeed = VortexAngularSpeed;
 			Data->TopRadius = TopRadius;
 			Data->MoveLength = MoveLength;
+			Data->ImpulseScale = ImpulseScale;
 			Data->Shape = static_cast<uint8>(Shape);
 			Data->EmissionType = static_cast<uint8>(EmissionType);
 			Data->bEnabled = bEnabled ? 1 : 0;
@@ -464,9 +467,14 @@ void UWindSubsystem::DrawDebugWind()
             *GridMin.ToString(), *GridMax.ToString(), *GridCenter.ToString());
     }
 
-	// Iterate over grid cells efficiently
-	// We only draw cells that have significant velocity to avoid clutter
+	// Iterate over grid cells
+	// Two-layer visualization:
+	//   Layer 1 (thin dark): all cells — shows ambient direction
+	//   Layer 2 (bright colored): cells with speed significantly above ambient — shows motor effect
     int32 DrawnCount = 0;
+	const float AmbientSpeed = AmbientWind.Size();
+	const float ExcessThreshold = FMath::Max(AmbientSpeed * 0.3f, 30.f); // 30% above ambient
+
 	for (int32 Z = 0; Z < WindGrid.SizeZ; Z++)
 	{
 		for (int32 Y = 0; Y < WindGrid.SizeY; Y++)
@@ -474,38 +482,56 @@ void UWindSubsystem::DrawDebugWind()
 			for (int32 X = 0; X < WindGrid.SizeX; X++)
 			{
 				const int32 Idx = WindGrid.CellIndex(X, Y, Z);
-                const FVector CellCenter = WindGrid.CellToWorld(X, Y, Z);
-                
-                // Draw grid point (small gray dot) to show structure
-                DrawDebugPoint(GetWorld(), CellCenter, 5.f, FColor(50, 50, 50), false, 0.f, 0);
+				const FVector CellCenter = WindGrid.CellToWorld(X, Y, Z);
 
-				const FVector Velocity = WindGrid.Velocities[Idx];
-				const float SpeedSq = Velocity.SizeSquared();
-
-				// Threshold to avoid drawing near-zero vectors
-				if (SpeedSq > 100.f) 
+				// Solid cells: red dot
+				if (WindGrid.Solids[Idx])
 				{
-					const float Speed = FMath::Sqrt(SpeedSq);
-					const FVector End = CellCenter + Velocity.GetSafeNormal() * FMath::Min(Speed, WindGrid.CellSize * 0.8f);
+					DrawDebugPoint(GetWorld(), CellCenter, 8.f, FColor::Red, false, 0.f, 0);
+					continue;
+				}
 
-					// Color based on speed
-					FColor Color = FColor::Green;
-					if (Speed > 500.f) Color = FColor::Yellow;
-					if (Speed > 1000.f) Color = FColor::Orange;
-					if (Speed > 1500.f) Color = FColor::Red;
+				// Grid structure dot
+				DrawDebugPoint(GetWorld(), CellCenter, 4.f, FColor(40, 40, 40), false, 0.f, 0);
 
-					DrawDebugDirectionalArrow(GetWorld(), CellCenter, End, 
+				const FVector& Velocity = WindGrid.Velocities[Idx];
+				const float Speed = Velocity.Size();
+				if (Speed < 1.f) continue;
+
+				const FVector VelNorm = Velocity.GetSafeNormal();
+
+				// Layer 1: thin dark arrow showing absolute direction
+				const float BaseLen = WindGrid.CellSize * 0.3f;
+				DrawDebugDirectionalArrow(GetWorld(), CellCenter,
+					CellCenter + VelNorm * BaseLen,
+					15.f, FColor(50, 80, 50), false, 0.f, 0, 1.5f);
+
+				// Layer 2: bright arrow for cells deviating from ambient (vector difference).
+				// |V - AmbientWind| catches perpendicular motor effects that |V|-|Ambient| misses.
+				const float DeviationSpeed = (Velocity - AmbientWind).Size();
+				if (DeviationSpeed > ExcessThreshold)
+				{
+					// Length scales with deviation, capped at 90% cell size
+					const float ArrowLen = FMath::Clamp(DeviationSpeed * 0.25f, 20.f, WindGrid.CellSize * 0.9f);
+
+					FColor Color = FColor::Cyan;
+					if (DeviationSpeed > 200.f) Color = FColor::Yellow;
+					if (DeviationSpeed > 500.f) Color = FColor(255, 140, 0); // Orange
+					if (DeviationSpeed > 900.f) Color = FColor::Red;
+
+					DrawDebugDirectionalArrow(GetWorld(), CellCenter,
+						CellCenter + VelNorm * ArrowLen,
 						50.f, Color, false, 0.f, 0, 5.f);
-                    DrawnCount++;
+					DrawnCount++;
 				}
 			}
 		}
 	}
-    
-    // Log arrow count occasionally or if it changes from 0 to >0
-    if (DrawnCount > 0 && (LogCounter % 300 == 0))
+
+    if (LogCounter % 300 == 0)
     {
-        UE_LOG(LogWind3D, Verbose, TEXT("DrawDebugWind: Drew %d arrows"), DrawnCount);
+        UE_LOG(LogWind3D, Verbose, TEXT("DrawDebugWind: %d motor-affected cells (ambient=%.0f cm/s, threshold=%.0f)"),
+            DrawnCount, AmbientSpeed, AmbientSpeed + ExcessThreshold);
     }
 }
 

@@ -20,6 +20,9 @@ struct FWindMotorData
 	// Cylinder shape: top radius can differ from bottom (Radius = bottom, TopRadius = top)
 	float    TopRadius = 0.f; // 0 = same as Radius
 
+	// Multiplier on top of InjectionFactor. >1.0 for powerful gusts/shockwaves.
+	float    ImpulseScale = 1.f;
+
 	uint8    Shape = 0;        // EWindMotorShape
 	uint8    EmissionType = 0; // EWindEmissionType
 	uint8    bEnabled = 1;

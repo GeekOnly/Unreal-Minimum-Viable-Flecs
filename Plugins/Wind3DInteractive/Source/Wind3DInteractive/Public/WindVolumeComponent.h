@@ -38,6 +38,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Force", meta = (ClampMin = "0.0", ClampMax = "2000.0"))
 	float Strength = 500.f;
 
+	/** Extra injection multiplier. 1.0 = normal. 3.0 = powerful shockwave.
+	 *  For Moving type, stacks on top of the automatic speed-based scaling. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Force", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+	float ImpulseScale = 1.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Force", meta = (ClampMin = "0.0"))
 	float VortexAngularSpeed = 1.f;
 

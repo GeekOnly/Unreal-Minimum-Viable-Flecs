@@ -1,4 +1,4 @@
-#include "WindGrid.h"
+﻿#include "WindGrid.h"
 #include "WindComponents.h"
 #include "WindTypes.h"
 
@@ -245,6 +245,11 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 				FVector Force = FVector::ZeroVector;
 				const FVector ToCell = CellCenter - Motor.WorldPosition;
 
+				// InjectionFactor = 1.0: direct velocity addition per frame (matches GoW reference).
+				// DeltaTime NOT used — inject the full Strength value directly so the effect is visible.
+				// DecayToAmbient() counterbalances (tune DecayRate in WindFieldSetupActor for persistence).
+				float InjectionFactor = 1.0f;
+
 				switch (Emission)
 				{
 				case EWindEmissionType::Directional:
@@ -264,21 +269,25 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 
 				case EWindEmissionType::Moving:
 					{
-						// GoW-style: blend radial push + movement direction
-						const FVector MoveDir = (Motor.WorldPosition - Motor.PreviousPosition).GetSafeNormal();
-						const FVector RadialDir = ToCell.GetSafeNormal();
+						const FVector MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
+						const float MoveDistance = MoveDelta.Size();
 
-						// If object barely moved, fallback to omni
-						FVector BlowDir;
-						if (MoveDir.SizeSquared() < SMALL_NUMBER)
-						{
-							BlowDir = RadialDir;
-						}
-						else
-						{
-							BlowDir = (RadialDir + MoveDir).GetSafeNormal();
-						}
-						Force = BlowDir * Motor.Strength * Falloff;
+						// Direct injection (no DeltaTime) — matches GoW reference.
+						// Speed boost: fast movement = stronger pressure wave.
+						// Stationary = 1.0 (same as other emission types).
+						const float SpeedBoost = FMath::Clamp(
+							MoveDistance / FMath::Max(Motor.Radius * 0.5f, 1.f),
+							0.f, 5.f);
+						InjectionFactor = 1.0f + SpeedBoost * 3.0f;
+
+						// Direction: movement direction when moving, actor forward when stationary
+						const FVector MoveDir = (MoveDistance > 0.1f)
+							? (MoveDelta / MoveDistance)
+							: (Motor.Direction.IsNearlyZero() ? ToCell.GetSafeNormal() : Motor.Direction);
+
+						// 70% forward (movement direction) + 30% radial outward
+						const FVector RadialDir = ToCell.GetSafeNormal();
+						Force = (MoveDir * 0.7f + RadialDir * 0.3f).GetSafeNormal() * Motor.Strength * Falloff;
 					}
 					break;
 				}
@@ -286,7 +295,7 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 				const int32 Idx = CellIndex(X, Y, Z);
 				if (Solids[Idx]) continue; // Don't inject into solid cells
 
-				Velocities[Idx] += Force * DeltaTime;
+				Velocities[Idx] += Force * InjectionFactor * Motor.ImpulseScale;
 
 				// Clamp velocity magnitude
 				const float MaxSpeed = Motor.Strength * 2.f;

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(/tmp/dump_region3.py:*)",
+      "Bash(/tmp/dump_region4.py:*)",
+      "Bash(/tmp/verify.py:*)",
+      "Bash(/tmp/verify2.py:*)"
+    ]
+  }
+}
