@@ -1,7 +1,7 @@
 #include "WindMotorVisualizer.h"
 #include "WindVolumeComponent.h"
 #include "WindSubsystem.h"
-#include "WindGrid.h"
+#include "IWindSolver.h"
 #include "WindTypes.h"
 #include "SceneManagement.h"
 #include "Engine/GameInstance.h"
@@ -186,14 +186,14 @@ void FWindMotorVisualizer::DrawEmissionArrows(const FTransform& T, uint8 Emissio
 	}
 }
 
-void FWindMotorVisualizer::DrawGridBounds(const FWindGrid& Grid, FPrimitiveDrawInterface* PDI) const
+void FWindMotorVisualizer::DrawGridBounds(const IWindSolver& Grid, FPrimitiveDrawInterface* PDI) const
 {
 	// Compute 8 corners of the grid bounding box
-	const FVector Min = Grid.WorldOrigin;
-	const FVector Max = Grid.WorldOrigin + FVector(
-		Grid.SizeX * Grid.CellSize,
-		Grid.SizeY * Grid.CellSize,
-		Grid.SizeZ * Grid.CellSize);
+	const FVector Min = Grid.GetWorldOrigin();
+	const FVector Max = Grid.GetWorldOrigin() + FVector(
+		Grid.GetSizeX() * Grid.GetCellSize(),
+		Grid.GetSizeY() * Grid.GetCellSize(),
+		Grid.GetSizeZ() * Grid.GetCellSize());
 
 	const FColor BoxColor = FColor(0, 200, 255); // bright cyan
 
@@ -231,12 +231,12 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
 
 	if (!WindSys) return;
 
-	const FWindGrid& Grid = WindSys->GetWindGrid();
+	const IWindSolver& Grid = WindSys->GetWindGrid();
 
 	// Always draw the grid bounding box so you can see coverage
 	DrawGridBounds(Grid, PDI);
 
-	const float MaxArrowLen = Grid.CellSize * 0.8f;
+	const float MaxArrowLen = Grid.GetCellSize() * 0.8f;
 
 	// Use DrawDebugDirectionalArrow instead (better visualization) but need DrawDebugHelpers.h
 	// Assuming DrawDebugHelpers.h is included or available via CoreMinimal/Engine.
@@ -244,16 +244,16 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
     // Let's use PDI lines for now to be safe as they don't require DrawDebugHelpers.h
     // But modify them to look like arrows.
     
-	for (int32 Z = 0; Z < Grid.SizeZ; Z++)
+	for (int32 Z = 0; Z < Grid.GetSizeZ(); Z++)
 	{
-		for (int32 Y = 0; Y < Grid.SizeY; Y++)
+		for (int32 Y = 0; Y < Grid.GetSizeY(); Y++)
 		{
-			for (int32 X = 0; X < Grid.SizeX; X++)
+			for (int32 X = 0; X < Grid.GetSizeX(); X++)
 			{
 				const FVector CellCenter = Grid.CellToWorld(X, Y, Z);
 
 				// Frustum check: skip cells not visible
-				if (!View->ViewFrustum.IntersectBox(CellCenter, FVector(Grid.CellSize * 0.5f)))
+				if (!View->ViewFrustum.IntersectBox(CellCenter, FVector(Grid.GetCellSize() * 0.5f)))
 					continue;
 
 				const FVector Vel = Grid.SampleVelocityAt(CellCenter);
@@ -264,7 +264,7 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
 					// ShowLevel 2: draw a small grey cross at empty cells so grid layout is visible
 					if (ShowLevel >= 2)
 					{
-						const float S = Grid.CellSize * 0.05f;
+						const float S = Grid.GetCellSize() * 0.05f;
 						const FColor EmptyColor(60, 60, 60);
 						PDI->DrawLine(CellCenter - FVector(S, 0, 0), CellCenter + FVector(S, 0, 0), EmptyColor, SDPG_World);
 						PDI->DrawLine(CellCenter - FVector(0, S, 0), CellCenter + FVector(0, S, 0), EmptyColor, SDPG_World);

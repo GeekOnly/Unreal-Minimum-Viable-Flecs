@@ -1,0 +1,124 @@
+// Wind3DInteractive GPU - Motor Injection Compute Shader
+// Processes all motors for each cell (brute force — fine for < 64 motors)
+// Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
+
+#include "/Engine/Private/Common.ush"
+
+struct FGPUMotorData
+{
+    float3 WorldPosition;
+    float  Strength;
+    float3 Direction;
+    float  Radius;
+    float3 PreviousPosition;
+    float  Height;
+    float3 AngularVelocity;
+    float  VortexAngularSpeed;
+    float  InnerRadius;
+    float  TopRadius;
+    float  ImpulseScale;
+    float  MoveLength;
+    uint   Shape;         // 0=Sphere, 1=Cylinder, 2=Cone
+    uint   EmissionType;  // 0=Directional, 1=Omni, 2=Vortex, 3=Moving
+    uint   bEnabled;
+    uint   _pad;
+};
+
+RWTexture3D<float4>                   VelocityTex;
+Texture3D<uint>                       SolidsTexture;
+StructuredBuffer<FGPUMotorData>       Motors;
+
+int    MotorCount;
+int3   GridSize;
+float3 GridOrigin;
+float  GridCellSize;
+float  DeltaTime;
+
+float SmoothStep01(float x)
+{
+    x = saturate(x);
+    return x * x * (3.0 - 2.0 * x);
+}
+
+[numthreads(8, 8, 4)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if (any(DTid >= (uint3)GridSize))
+        return;
+
+    int3 id = (int3)DTid;
+    if (SolidsTexture[id] != 0)
+        return;
+
+    float3 CellCenter = GridOrigin + (float3(id) + 0.5) * GridCellSize;
+    float4 Accumulated = VelocityTex[id];
+
+    for (int m = 0; m < MotorCount; m++)
+    {
+        FGPUMotorData Motor = Motors[m];
+        if (!Motor.bEnabled) continue;
+
+        float3 ToCell = CellCenter - Motor.WorldPosition;
+        float DistSq = dot(ToCell, ToCell);
+        float RadiusSq = Motor.Radius * Motor.Radius;
+
+        // Simple sphere containment (TODO: cylinder/cone shapes)
+        if (DistSq > RadiusSq) continue;
+
+        float Dist = sqrt(DistSq);
+        float Falloff = SmoothStep01(1.0 - Dist / Motor.Radius);
+
+        float3 Force = float3(0, 0, 0);
+        float InjectionFactor = 1.0;
+
+        // Emission type switch
+        if (Motor.EmissionType == 0) // Directional
+        {
+            Force = Motor.Direction * Motor.Strength * Falloff;
+        }
+        else if (Motor.EmissionType == 1) // Omni
+        {
+            Force = normalize(ToCell) * Motor.Strength * Falloff;
+        }
+        else if (Motor.EmissionType == 2) // Vortex
+        {
+            float3 CrossDir = cross(Motor.Direction, normalize(ToCell));
+            Force = CrossDir * Motor.Strength * Motor.VortexAngularSpeed * Falloff;
+        }
+        else if (Motor.EmissionType == 3) // Moving
+        {
+            float3 MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
+            float MoveDistance = length(MoveDelta);
+
+            if (MoveDistance > 0.1)
+            {
+                float SpeedBoost = clamp(MoveDistance / max(Motor.Radius * 0.5, 1.0), 0.0, 5.0);
+                InjectionFactor = 1.0 + SpeedBoost * 3.0;
+
+                float3 MoveDir = MoveDelta / MoveDistance;
+                float3 RadialDir = normalize(ToCell);
+                Force = normalize(MoveDir * 0.7 + RadialDir * 0.3) * Motor.Strength * Falloff;
+            }
+            else
+            {
+                Force = (length(Motor.Direction) > 0.001 ? Motor.Direction : normalize(ToCell))
+                    * Motor.Strength * Falloff;
+            }
+        }
+
+        float3 Contrib = Force * InjectionFactor * Motor.ImpulseScale;
+        Accumulated.xyz += Contrib;
+
+        // Turbulence in alpha
+        Accumulated.w = clamp(Accumulated.w + Falloff * 0.1 * DeltaTime, 0.0, 1.0);
+    }
+
+    // Clamp velocity (use first motor's strength as reference — simplified)
+    float MaxSpeed = 1000.0; // TODO: pass as parameter
+    if (dot(Accumulated.xyz, Accumulated.xyz) > MaxSpeed * MaxSpeed)
+    {
+        Accumulated.xyz = normalize(Accumulated.xyz) * MaxSpeed;
+    }
+
+    VelocityTex[id] = Accumulated;
+}

@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "WindGrid.h"
+#include "IWindSolver.h"
 #include "WindTypes.h"
 #include "WindTextureManager.h"
 #include "flecs.h"
@@ -109,8 +109,11 @@ public:
 
 	// --- C++ access ---
 	flecs::world* GetEcsWorld() const { return ECSWorld; }
-	const FWindGrid& GetWindGrid() const { return WindGrid; }
-	FWindGrid& GetWindGridMutable() { return WindGrid; }
+	IWindSolver& GetSolver() const { check(Solver.IsValid()); return *Solver; }
+
+	// Legacy compat — prefer GetSolver()
+	const IWindSolver& GetWindGrid() const { return GetSolver(); }
+	IWindSolver& GetWindGridMutable() { return GetSolver(); }
 
 	// --- Simulation Parameters ---
 	float DiffusionRate = 0.15f;
@@ -140,7 +143,7 @@ public:
 
 protected:
 	flecs::world* ECSWorld = nullptr;
-	FWindGrid WindGrid;
+	TUniquePtr<IWindSolver> Solver;
 	FVector AmbientWind = FVector(100.f, 0.f, 0.f);
 
 private:

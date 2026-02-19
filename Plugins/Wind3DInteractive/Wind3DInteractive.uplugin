@@ -21,9 +21,20 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "Wind3DInteractiveCPU",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "Wind3DInteractive",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "Wind3DInteractiveGPU",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [ "Win64", "Linux", "Mac" ]
 		},
 		{
 			"Name": "Wind3DInteractiveEditor",

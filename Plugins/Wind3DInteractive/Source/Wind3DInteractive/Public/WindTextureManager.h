@@ -6,13 +6,13 @@ class UTexture2D;
 class UMaterialParameterCollection;
 class UMaterialInstanceDynamic;
 class UWorld;
-struct FWindGrid;
+struct IWindSolver;
 
 /**
  * Manages the wind data texture (2D atlas of Z slices) and Material Parameter Collection.
  * Owned by UWindSubsystem. Not a UObject — plain C++ class.
  *
- * Each frame after simulation: encodes FWindGrid velocities into a staging buffer,
+ * Each frame after simulation: encodes IWindSolver velocities into a staging buffer,
  * uploads to GPU via render command, and updates MPC parameters.
  */
 class WIND3DINTERACTIVE_API FWindTextureManager
@@ -32,7 +32,7 @@ public:
 	 * Encodes grid data → staging buffer → GPU upload + MPC update.
 	 */
 	void UpdateFromGrid(
-		const FWindGrid& Grid,
+		const IWindSolver& Grid,
 		const FVector& AmbientWind,
 		float OverallPower);
 
@@ -53,9 +53,9 @@ public:
 private:
 	void CreateAtlasTexture();
 	void CreateMPC();
-	void EncodeGridToStagingBuffer(const FWindGrid& Grid);
+	void EncodeGridToStagingBuffer(const IWindSolver& Grid);
 	void UploadToGPU();
-	void UpdateMPCParams(const FWindGrid& Grid, const FVector& AmbientWind, float OverallPower);
+	void UpdateMPCParams(const IWindSolver& Grid, const FVector& AmbientWind, float OverallPower);
 
 	// Cached grid dimensions
 	int32 GridSizeX = 0;

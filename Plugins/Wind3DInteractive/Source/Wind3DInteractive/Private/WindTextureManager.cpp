@@ -1,5 +1,5 @@
 #include "WindTextureManager.h"
-#include "WindGrid.h"
+#include "IWindSolver.h"
 #include "Wind3DInteractiveModule.h"
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -127,9 +127,11 @@ void FWindTextureManager::CreateMPC()
 	AddScalarParam(FName(TEXT("WindMaxSpeed")), MaxWindSpeed);
 }
 
-void FWindTextureManager::EncodeGridToStagingBuffer(const FWindGrid& Grid)
+void FWindTextureManager::EncodeGridToStagingBuffer(const IWindSolver& Grid)
 {
 	const float InvMaxSpeed = 1.0f / MaxWindSpeed;
+	const TArray<FVector>& Velocities = Grid.GetVelocities();
+	const TArray<float>& Turbulences = Grid.GetTurbulences();
 
 	for (int32 Z = 0; Z < GridSizeZ; Z++)
 	{
@@ -138,8 +140,8 @@ void FWindTextureManager::EncodeGridToStagingBuffer(const FWindGrid& Grid)
 			for (int32 X = 0; X < GridSizeX; X++)
 			{
 				const int32 GridIdx = Grid.CellIndex(X, Y, Z);
-				const FVector& Vel = Grid.Velocities[GridIdx];
-				const float Turb = Grid.Turbulences.IsValidIndex(GridIdx) ? Grid.Turbulences[GridIdx] : 0.f;
+				const FVector& Vel = Velocities[GridIdx];
+				const float Turb = Turbulences.IsValidIndex(GridIdx) ? Turbulences[GridIdx] : 0.f;
 
 				// Atlas pixel: Z slices tiled horizontally
 				const int32 AtlasX = Z * GridSizeX + X;
@@ -178,7 +180,7 @@ void FWindTextureManager::UploadToGPU()
 }
 
 void FWindTextureManager::UpdateMPCParams(
-	const FWindGrid& Grid,
+	const IWindSolver& Grid,
 	const FVector& AmbientWind,
 	float OverallPower)
 {
@@ -189,14 +191,15 @@ void FWindTextureManager::UpdateMPCParams(
 		World->GetParameterCollectionInstance(WindMPC);
 	if (!Inst) return;
 
+	const FVector GridOrigin = Grid.GetWorldOrigin();
 	const FVector VolumeSize(
-		Grid.SizeX * Grid.CellSize,
-		Grid.SizeY * Grid.CellSize,
-		Grid.SizeZ * Grid.CellSize);
+		Grid.GetSizeX() * Grid.GetCellSize(),
+		Grid.GetSizeY() * Grid.GetCellSize(),
+		Grid.GetSizeZ() * Grid.GetCellSize());
 
 	Inst->SetVectorParameterValue(
 		FName(TEXT("WindVolumeOrigin")),
-		FLinearColor(Grid.WorldOrigin.X, Grid.WorldOrigin.Y, Grid.WorldOrigin.Z, 0));
+		FLinearColor(GridOrigin.X, GridOrigin.Y, GridOrigin.Z, 0));
 
 	Inst->SetVectorParameterValue(
 		FName(TEXT("WindVolumeSize")),
@@ -204,7 +207,7 @@ void FWindTextureManager::UpdateMPCParams(
 
 	Inst->SetVectorParameterValue(
 		FName(TEXT("WindGridCells")),
-		FLinearColor(Grid.SizeX, Grid.SizeY, Grid.SizeZ, 0));
+		FLinearColor(Grid.GetSizeX(), Grid.GetSizeY(), Grid.GetSizeZ(), 0));
 
 	Inst->SetVectorParameterValue(
 		FName(TEXT("WindAmbient")),
@@ -214,21 +217,21 @@ void FWindTextureManager::UpdateMPCParams(
 }
 
 void FWindTextureManager::UpdateFromGrid(
-	const FWindGrid& Grid,
+	const IWindSolver& Grid,
 	const FVector& AmbientWind,
 	float OverallPower)
 {
 	if (!bInitialized) return;
 
 	// Check if grid dimensions changed (e.g. SetupWindGrid called with new size)
-	if (Grid.SizeX != GridSizeX || Grid.SizeY != GridSizeY || Grid.SizeZ != GridSizeZ)
+	if (Grid.GetSizeX() != GridSizeX || Grid.GetSizeY() != GridSizeY || Grid.GetSizeZ() != GridSizeZ)
 	{
 		UE_LOG(LogWind3D, Log, TEXT("Grid dimensions changed, reinitializing TextureManager."));
 		UWorld* World = CachedWorld.Get();
 		Shutdown();
 		if (World)
 		{
-			Initialize(World, Grid.SizeX, Grid.SizeY, Grid.SizeZ);
+			Initialize(World, Grid.GetSizeX(), Grid.GetSizeY(), Grid.GetSizeZ());
 		}
 		return;
 	}

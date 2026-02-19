@@ -1,0 +1,87 @@
+// Wind3DInteractive GPU - Pressure Projection Compute Shader
+// Jacobi iteration for divergence-free flow
+// Must dispatch multiple times (Iterations) with ping-pong
+// Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
+
+#include "/Engine/Private/Common.ush"
+
+// Pass 1: Compute divergence + Jacobi pressure solve iteration
+// Pass 2: Subtract pressure gradient from velocity
+
+RWTexture3D<float>  PressureOut;      // Write
+Texture3D<float>    PressureIn;       // Read (previous iteration)
+Texture3D<float4>   VelocityTex;      // Read velocity for divergence
+Texture3D<uint>     SolidsTexture;
+
+RWTexture3D<float4> VelocityOut;      // Write (for gradient subtraction pass)
+
+int3 GridSize;
+uint PassType;  // 0 = Jacobi iteration, 1 = Gradient subtraction
+
+float SafeVX(int3 pos)
+{
+    if (any(pos < 0) || any(pos >= GridSize) || SolidsTexture[pos] != 0) return 0.0;
+    return VelocityTex[pos].x;
+}
+float SafeVY(int3 pos)
+{
+    if (any(pos < 0) || any(pos >= GridSize) || SolidsTexture[pos] != 0) return 0.0;
+    return VelocityTex[pos].y;
+}
+float SafeVZ(int3 pos)
+{
+    if (any(pos < 0) || any(pos >= GridSize) || SolidsTexture[pos] != 0) return 0.0;
+    return VelocityTex[pos].z;
+}
+
+float SafeP(int3 pos, float MirrorP)
+{
+    if (any(pos < 0) || any(pos >= GridSize) || SolidsTexture[pos] != 0) return MirrorP;
+    return PressureIn[pos];
+}
+
+[numthreads(8, 8, 4)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if (any(DTid >= (uint3)GridSize))
+        return;
+
+    int3 id = (int3)DTid;
+    if (SolidsTexture[id] != 0)
+        return;
+
+    if (PassType == 0)
+    {
+        // === Jacobi Iteration ===
+        // Compute velocity divergence
+        float Div =
+            (SafeVX(id + int3(1,0,0)) - SafeVX(id + int3(-1,0,0))) * 0.5 +
+            (SafeVY(id + int3(0,1,0)) - SafeVY(id + int3(0,-1,0))) * 0.5 +
+            (SafeVZ(id + int3(0,0,1)) - SafeVZ(id + int3(0,0,-1))) * 0.5;
+
+        float CurP = PressureIn[id];
+
+        // Sum of neighbor pressures
+        float SumP =
+            SafeP(id + int3(1,0,0), CurP) +
+            SafeP(id + int3(-1,0,0), CurP) +
+            SafeP(id + int3(0,1,0), CurP) +
+            SafeP(id + int3(0,-1,0), CurP) +
+            SafeP(id + int3(0,0,1), CurP) +
+            SafeP(id + int3(0,0,-1), CurP);
+
+        PressureOut[id] = (SumP - Div) / 6.0;
+    }
+    else
+    {
+        // === Gradient Subtraction ===
+        float CurP = PressureIn[id];
+
+        float4 Vel = VelocityTex[id];
+        Vel.x -= (SafeP(id + int3(1,0,0), CurP) - SafeP(id + int3(-1,0,0), CurP)) * 0.5;
+        Vel.y -= (SafeP(id + int3(0,1,0), CurP) - SafeP(id + int3(0,-1,0), CurP)) * 0.5;
+        Vel.z -= (SafeP(id + int3(0,0,1), CurP) - SafeP(id + int3(0,0,-1), CurP)) * 0.5;
+
+        VelocityOut[id] = Vel;
+    }
+}

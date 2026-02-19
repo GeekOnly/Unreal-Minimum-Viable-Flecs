@@ -1,0 +1,49 @@
+// Wind3DInteractive GPU - Diffusion Compute Shader
+// 6-neighbor Laplacian blur (same math as FWindGridCPU::Diffuse)
+// Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
+
+#include "/Engine/Private/Common.ush"
+
+RWTexture3D<float4> VelocityOut;     // Write (back buffer)
+Texture3D<float4>   VelocityIn;      // Read (front buffer)
+Texture3D<uint>     SolidsTexture;   // 0 = air, 1 = solid
+
+float Alpha;                          // DiffusionRate * DeltaTime
+int3  GridSize;                       // SizeX, SizeY, SizeZ
+
+[numthreads(8, 8, 4)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if (any(DTid >= (uint3)GridSize))
+        return;
+
+    int3 id = (int3)DTid;
+
+    // Solid cells → zero velocity
+    if (SolidsTexture[id] != 0)
+    {
+        VelocityOut[id] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    float4 Center = VelocityIn[id];
+
+    // 6-neighbor sampling (clamp at boundaries)
+    int3 xp = int3(min(id.x + 1, GridSize.x - 1), id.y, id.z);
+    int3 xn = int3(max(id.x - 1, 0),                id.y, id.z);
+    int3 yp = int3(id.x, min(id.y + 1, GridSize.y - 1), id.z);
+    int3 yn = int3(id.x, max(id.y - 1, 0),                id.z);
+    int3 zp = int3(id.x, id.y, min(id.z + 1, GridSize.z - 1));
+    int3 zn = int3(id.x, id.y, max(id.z - 1, 0));
+
+    // Solid neighbors reflect center value
+    float4 Xp = SolidsTexture[xp] ? Center : VelocityIn[xp];
+    float4 Xn = SolidsTexture[xn] ? Center : VelocityIn[xn];
+    float4 Yp = SolidsTexture[yp] ? Center : VelocityIn[yp];
+    float4 Yn = SolidsTexture[yn] ? Center : VelocityIn[yn];
+    float4 Zp = SolidsTexture[zp] ? Center : VelocityIn[zp];
+    float4 Zn = SolidsTexture[zn] ? Center : VelocityIn[zn];
+
+    float4 Laplacian = (Xp + Xn + Yp + Yn + Zp + Zn) - Center * 6.0;
+    VelocityOut[id] = Center + Laplacian * Alpha;
+}
