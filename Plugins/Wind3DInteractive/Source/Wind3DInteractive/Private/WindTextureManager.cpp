@@ -6,6 +6,10 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "RenderingThread.h"
+#include "TextureResource.h"
 
 FWindTextureManager::FWindTextureManager()
 {
@@ -195,9 +199,12 @@ void FWindTextureManager::UpdateVizSlice(const IWindSolver& Grid)
 		? (GridSizeZ / 2)
 		: FMath::Clamp(VizZSlice, 0, GridSizeZ - 1);
 
-	const float InvMaxSpeed = 1.0f / MaxWindSpeed;
+	// Use a smaller display range so typical wind speeds fill the 0-255 range.
+	// MaxWindSpeed (2000) is for encoding; VizDisplayMax is only for the 2D slice display.
+	static constexpr float VizDisplayMax = 400.0f; // saturates above 400 cm/s — fine for visualization
+	const float InvVizMax = 1.0f / VizDisplayMax;
+
 	const TArray<FVector>& Velocities = Grid.GetVelocities();
-	const TArray<float>& Turbulences = Grid.GetTurbulences();
 
 	for (int32 Y = 0; Y < GridSizeY; Y++)
 	{
@@ -205,14 +212,13 @@ void FWindTextureManager::UpdateVizSlice(const IWindSolver& Grid)
 		{
 			const int32 GridIdx = Grid.CellIndex(X, Y, ZSlice);
 			const FVector& Vel = Velocities[GridIdx];
-			const float Turb = Turbulences.IsValidIndex(GridIdx) ? Turbulences[GridIdx] : 0.f;
 
-			// R = speed magnitude (0=no wind, 255=MaxWindSpeed)
-			const uint8 SpeedByte = (uint8)(FMath::Clamp(Vel.Size() * InvMaxSpeed, 0.f, 1.f) * 255.f);
+			// R = speed magnitude (saturates at VizDisplayMax)
+			const uint8 SpeedByte = (uint8)(FMath::Clamp(Vel.Size() * InvVizMax, 0.f, 1.f) * 255.f);
 			// G = X velocity direction (0=max -X, 128=zero, 255=max +X)
-			const uint8 VelXByte  = (uint8)(FMath::Clamp((Vel.X * InvMaxSpeed + 1.f) * 0.5f, 0.f, 1.f) * 255.f);
+			const uint8 VelXByte  = (uint8)(FMath::Clamp((Vel.X * InvVizMax + 1.f) * 0.5f, 0.f, 1.f) * 255.f);
 			// B = Y velocity direction (0=max -Y, 128=zero, 255=max +Y)
-			const uint8 VelYByte  = (uint8)(FMath::Clamp((Vel.Y * InvMaxSpeed + 1.f) * 0.5f, 0.f, 1.f) * 255.f);
+			const uint8 VelYByte  = (uint8)(FMath::Clamp((Vel.Y * InvVizMax + 1.f) * 0.5f, 0.f, 1.f) * 255.f);
 
 			// PF_B8G8R8A8 memory order: B, G, R, A
 			const int32 PixIdx = (Y * GridSizeX + X) * 4;
@@ -267,32 +273,44 @@ void FWindTextureManager::UploadToGPU()
 {
 	if (!WindVolumeTexture) return;
 
-	FTexturePlatformData* PlatformData = WindVolumeTexture->GetPlatformData();
-	if (!PlatformData || PlatformData->Mips.Num() == 0) return;
+	FTextureResource* Resource = WindVolumeTexture->GetResource();
+	if (!Resource) return;
 
-	FTexture2DMipMap& Mip = PlatformData->Mips[0];
-	void* TextureData = Mip.BulkData.Lock(LOCK_READ_WRITE);
-	if (TextureData)
-	{
-		FMemory::Memcpy(TextureData, StagingBuffer.GetData(),
-			StagingBuffer.Num() * sizeof(FFloat16Color));
-	}
-	Mip.BulkData.Unlock();
+	// BulkData is freed after the initial UpdateResource() call, so we must update
+	// the live GPU resource directly via the render thread.
+	TArray<FFloat16Color> DataCopy = StagingBuffer;
+	const int32 SX = GridSizeX;
+	const int32 SY = GridSizeY;
+	const int32 SZ = GridSizeZ;
 
-	WindVolumeTexture->UpdateResource();
+	ENQUEUE_RENDER_COMMAND(WindVolumeTextureUpdate)(
+		[Resource, DataCopy = MoveTemp(DataCopy), SX, SY, SZ]
+		(FRHICommandListImmediate& RHICmdList)
+		{
+			if (!Resource->TextureRHI) return;
 
-	// Debug: log a sample voxel every ~5 seconds
+			const FUpdateTextureRegion3D Region(0, 0, 0, 0, 0, 0, SX, SY, SZ);
+			RHICmdList.UpdateTexture3D(
+				Resource->TextureRHI,
+				0, // MipIndex
+				Region,
+				(uint32)(SX * sizeof(FFloat16Color)),       // SourceRowPitch
+				(uint32)(SX * SY * sizeof(FFloat16Color)),  // SourceDepthPitch
+				(const uint8*)DataCopy.GetData()
+			);
+		}
+	);
+
+	// Debug: log center voxel every ~5 seconds (game thread, safe to read StagingBuffer here)
 	static int32 UploadLogCounter = 0;
 	if (UploadLogCounter++ % 300 == 0 && StagingBuffer.Num() > 0)
 	{
-		// Sample center voxel
 		const int32 CenterIdx = (GridSizeZ / 2) * GridSizeX * GridSizeY + (GridSizeY / 2) * GridSizeX + (GridSizeX / 2);
 		if (StagingBuffer.IsValidIndex(CenterIdx))
 		{
 			const FFloat16Color& C = StagingBuffer[CenterIdx];
-			UE_LOG(LogWind3D, Log, TEXT("UploadToGPU: CenterVoxel[%d] = (%.3f, %.3f, %.3f, %.3f) Texture=%s"),
-				CenterIdx, C.R.GetFloat(), C.G.GetFloat(), C.B.GetFloat(), C.A.GetFloat(),
-				*GetNameSafe(WindVolumeTexture));
+			UE_LOG(LogWind3D, Log, TEXT("UploadToGPU: Center=(%.3f, %.3f, %.3f, %.3f)"),
+				C.R.GetFloat(), C.G.GetFloat(), C.B.GetFloat(), C.A.GetFloat());
 		}
 	}
 }
@@ -405,5 +423,11 @@ void FWindTextureManager::UpdateBoundMIDs(const IWindSolver& Grid)
 
 		MID->SetVectorParameterValue(FName(TEXT("VolumeOrigin")), OriginColor);
 		MID->SetVectorParameterValue(FName(TEXT("VolumeSize")), SizeColor);
+
+		// Ensure texture is up to date (in case of re-initialization)
+		if (WindVolumeTexture)
+		{
+			MID->SetTextureParameterValue(FName(TEXT("WindVolume")), WindVolumeTexture);
+		}
 	}
 }

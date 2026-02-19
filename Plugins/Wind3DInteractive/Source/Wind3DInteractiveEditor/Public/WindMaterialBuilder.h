@@ -33,6 +33,15 @@ public:
 	static UMaterial* CreateWindMaterial(const FString& SavePath = TEXT("/Game/Wind/M_WindGrass_Auto"));
 
 	/**
+	 * Create a debugging material that visualizes wind velocity in the volume.
+	 * 
+	 * @param SavePath Content path, e.g. "/Game/Wind/M_WindDebug"
+	 * @return The created UMaterial, or nullptr on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Editor", meta = (DevelopmentOnly))
+	static UMaterial* CreateDebugMaterial(const FString& SavePath = TEXT("/Game/Wind/M_WindDebug_Auto"));
+
+	/**
 	 * Apply wind material to a component.
 	 * Creates a MID, binds the wind volume texture, and applies it.
 	 * 

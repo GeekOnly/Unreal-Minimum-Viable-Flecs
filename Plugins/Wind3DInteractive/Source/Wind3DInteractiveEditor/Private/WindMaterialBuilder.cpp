@@ -49,6 +49,29 @@ static FAutoConsoleCommand GWindCreateMaterialCmd(
 	})
 );
 
+static FAutoConsoleCommand GWindCreateDebugMaterialCmd(
+	TEXT("Wind3D.CreateDebugMaterial"),
+	TEXT("Creates a dubug wind material. Usage: Wind3D.CreateDebugMaterial [/Game/Wind/M_WindDebug_Auto]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		FString Path = TEXT("/Game/Wind/M_WindDebug_Auto");
+		if (Args.Num() > 0 && !Args[0].IsEmpty())
+		{
+			Path = Args[0];
+		}
+
+		UMaterial* Mat = UWindMaterialBuilder::CreateDebugMaterial(Path);
+		if (Mat)
+		{
+			UE_LOG(LogWindMaterialBuilder, Log, TEXT("Debug Wind material created at: %s"), *Path);
+		}
+		else
+		{
+			UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create Debug Wind material at: %s"), *Path);
+		}
+	})
+);
+
 // ---------------------------------------------------------------------------
 // Helper: create a material expression and add it to the material
 // ---------------------------------------------------------------------------
@@ -287,6 +310,151 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 	{
 		UE_LOG(LogWindMaterialBuilder, Warning,
 			TEXT("Wind material created in memory but save failed: %s"), *PackageFilename);
+	}
+
+	return Mat;
+}
+
+// ---------------------------------------------------------------------------
+// CreateDebugMaterial
+// ---------------------------------------------------------------------------
+UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
+{
+	// ---- 1. Create Package & Material ----
+	const FString PackagePath = SavePath;
+	const FString MaterialName = FPackageName::GetShortName(PackagePath);
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package) return nullptr;
+
+	UMaterial* Mat = NewObject<UMaterial>(Package, *MaterialName, RF_Public | RF_Standalone);
+	if (!Mat) return nullptr;
+
+	Mat->TwoSided = false;
+	Mat->bUsedWithInstancedStaticMeshes = true;
+	// Set to Unlit for clearer visualization of pure color
+	Mat->SetShadingModel(MSM_Unlit);
+
+	// ---- 2. Create Expression Nodes ----
+
+	// -- WorldPosition --
+	auto* WorldPos = AddExpression<UMaterialExpressionWorldPosition>(Mat, -1200, 100);
+
+	// -- VolumeOrigin --
+	auto* OriginParam = AddExpression<UMaterialExpressionVectorParameter>(Mat, -1200, 300);
+	OriginParam->ParameterName = TEXT("VolumeOrigin");
+	OriginParam->DefaultValue = FLinearColor(0, 0, 0, 0);
+
+	// -- VolumeSize --
+	auto* SizeParam = AddExpression<UMaterialExpressionVectorParameter>(Mat, -1200, 500);
+	SizeParam->ParameterName = TEXT("VolumeSize");
+	SizeParam->DefaultValue = FLinearColor(6400, 6400, 3200, 0);
+
+	// -- TextureSampleParameterVolume: WindVolume --
+	auto* VolTexSample = AddExpression<UMaterialExpressionTextureSampleParameterVolume>(Mat, -800, 300);
+	VolTexSample->ParameterName = TEXT("WindVolume");
+	VolTexSample->SamplerType = SAMPLERTYPE_LinearColor;
+
+	// Try to load default neutral texture
+	UVolumeTexture* DefaultVolTex = LoadObject<UVolumeTexture>(
+		nullptr, TEXT("/Game/Wind/VT_Wind_Neutral.VT_Wind_Neutral"));
+	if (!DefaultVolTex) DefaultVolTex = CreateNeutralWindTexture(TEXT("/Game/Wind/VT_Wind_Neutral"));
+	if (DefaultVolTex) VolTexSample->Texture = DefaultVolTex;
+
+	// -- Custom Node: Debug Visualization --
+	auto* DebugNode = AddExpression<UMaterialExpressionCustom>(Mat, -400, 200);
+	DebugNode->Description = TEXT("DebugWindViz");
+	DebugNode->OutputType = CMOT_Float3;
+	DebugNode->Code = TEXT(
+		"// Normalize World Pos to UVW [0..1]\n"
+		"float3 UVW = (WorldPos - VolumeOrigin.xyz) / max(VolumeSize.xyz, 1.0f);\n"
+		"\n"
+		"// Decode velocity (assuming texture stores [0..1] mapped to [-Max, +Max])\n"
+		"float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * 2000.0f;\n"
+		"float Speed = length(Velocity);\n"
+		"float NormSpeed = saturate(Speed / 400.0f);\n"
+		"\n"
+		"// Visualize Speed: Green (0) -> Red (Max)\n"
+		"float3 Color = lerp(float3(0,1,0), float3(1,0,0), NormSpeed);\n"
+		"\n"
+		"// Gray out if outside volume bounds\n"
+		"if (any(UVW < 0.0f) || any(UVW > 1.0f))\n"
+		"{\n"
+		"    // Check pattern for out of bounds\n"
+		"    float3 P = frac(WorldPos / 100.0f);\n"
+		"    if (P.x < 0.5f ^ P.y < 0.5f ^ P.z < 0.5f) return float3(0.2, 0.2, 0.2);\n"
+		"    return float3(0.1, 0.1, 0.1);\n"
+		"}\n"
+		"\n"
+		"return Color;"
+	);
+
+	// Connect Inputs
+	DebugNode->Inputs.Empty();
+	{
+		FCustomInput In;
+		In.InputName = TEXT("WorldPos");
+		In.Input.Connect(0, WorldPos);
+		DebugNode->Inputs.Add(In);
+	}
+	{
+		FCustomInput In;
+		In.InputName = TEXT("VolumeOrigin");
+		In.Input.Connect(0, OriginParam);
+		DebugNode->Inputs.Add(In);
+	}
+	{
+		FCustomInput In;
+		In.InputName = TEXT("VolumeSize");
+		In.Input.Connect(0, SizeParam);
+		DebugNode->Inputs.Add(In);
+	}
+	{
+		FCustomInput In;
+		In.InputName = TEXT("Texel");
+		In.Input.Connect(0, VolTexSample);
+		DebugNode->Inputs.Add(In);
+	}
+
+	// UVW Calculation for Texture Sample
+	auto* UVWCalc = AddExpression<UMaterialExpressionCustom>(Mat, -1000, 300);
+	UVWCalc->Description = TEXT("CalcUVW");
+	UVWCalc->OutputType = CMOT_Float3;
+	UVWCalc->Code = TEXT("return saturate((WorldPos - VolumeOrigin.xyz) / max(VolumeSize.xyz, 1.0f));");
+	UVWCalc->Inputs.Empty();
+	{
+		FCustomInput In; In.InputName = TEXT("WorldPos"); In.Input.Connect(0, WorldPos); UVWCalc->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("VolumeOrigin"); In.Input.Connect(0, OriginParam); UVWCalc->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("VolumeSize"); In.Input.Connect(0, SizeParam); UVWCalc->Inputs.Add(In);
+	}
+	VolTexSample->Coordinates.Connect(0, UVWCalc);
+
+	// Connect to Emissive Color
+	Mat->GetEditorOnlyData()->EmissiveColor.Connect(0, DebugNode);
+
+	// ---- 3. Compile, Save & Register ----
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+	Package->MarkPackageDirty();
+
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		PackagePath, FPackageName::GetAssetPackageExtension());
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+
+	if (UPackage::SavePackage(Package, Mat, *PackageFilename, SaveArgs))
+	{
+		FAssetRegistryModule::AssetCreated(Mat);
+		UE_LOG(LogWindMaterialBuilder, Log, TEXT("Debug Wind material saved: %s"), *PackagePath);
+	}
+	else
+	{
+		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to save Debug Wind material: %s"), *PackagePath);
 	}
 
 	return Mat;
