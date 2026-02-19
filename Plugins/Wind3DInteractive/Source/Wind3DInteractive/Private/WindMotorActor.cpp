@@ -103,6 +103,49 @@ void AWindMotorActor::Tick(float DeltaTime)
 		}
 	}
 
+	// --- Compute Angular Velocity ---
+	FVector AngularVelocityVec = FVector::ZeroVector;
+	const FQuat CurrentRotation = GetActorQuat();
+
+	if (WindVolumeComp->EmissionType == EWindEmissionType::Moving)
+	{
+		if (bRotationInitialized && DeltaTime > SMALL_NUMBER)
+		{
+			// Compute rotation delta: Q_delta = Q_current * Q_prev^-1
+			const FQuat DeltaQuat = CurrentRotation * PreviousRotation.Inverse();
+
+			FVector Axis;
+			float AngleRad;
+			DeltaQuat.ToAxisAndAngle(Axis, AngleRad);
+
+			// Normalize angle to [-PI, PI]
+			if (AngleRad > PI)
+			{
+				AngleRad -= 2.f * PI;
+			}
+
+			// Angular velocity = axis * angle / dt (rad/s)
+			if (FMath::Abs(AngleRad) > SMALL_NUMBER)
+			{
+				AngularVelocityVec = Axis * AngleRad / DeltaTime;
+			}
+		}
+
+		// If AngularSpeed is set on the component, use it as a minimum
+		// (for continuously spinning objects where per-frame delta may be small)
+		if (WindVolumeComp->AngularSpeed > SMALL_NUMBER)
+		{
+			const FVector DirectionAngVel = GetActorForwardVector() * WindVolumeComp->AngularSpeed;
+			if (AngularVelocityVec.SizeSquared() < DirectionAngVel.SizeSquared())
+			{
+				AngularVelocityVec = DirectionAngVel;
+			}
+		}
+
+		PreviousRotation = CurrentRotation;
+		bRotationInitialized = true;
+	}
+
 	UWindSubsystem* WindSys = GetWindSubsystem();
 	if (WindSys && ECSHandle.IsValid())
 	{
@@ -120,8 +163,51 @@ void AWindMotorActor::Tick(float DeltaTime)
 			bEffectiveEnabled,
 			WindVolumeComp->TopRadius,
 			WindVolumeComp->MoveLength,
-			WindVolumeComp->ImpulseScale
+			WindVolumeComp->ImpulseScale,
+			AngularVelocityVec
 		);
+	}
+
+	// --- Update DirectionArrow to show effective wind direction ---
+	if (DirectionArrow)
+	{
+		FVector EffectiveDir = GetActorForwardVector();
+
+		switch (WindVolumeComp->EmissionType)
+		{
+		case EWindEmissionType::Directional:
+		case EWindEmissionType::Omni:
+			// Arrow follows actor forward (default behavior)
+			break;
+
+		case EWindEmissionType::Vortex:
+			{
+				// Show tangential direction: cross of axis with a reference radial
+				const FVector Axis = GetActorForwardVector();
+				const FVector Ref = FMath::Abs(FVector::DotProduct(Axis, FVector::UpVector)) < 0.9f
+					? FVector::UpVector : FVector::RightVector;
+				const FVector Radial = FVector::CrossProduct(Axis, Ref).GetSafeNormal();
+				EffectiveDir = FVector::CrossProduct(Axis, Radial).GetSafeNormal();
+			}
+			break;
+
+		case EWindEmissionType::Moving:
+			{
+				// Show movement direction or rotation axis
+				if (AngularVelocityVec.SizeSquared() > SMALL_NUMBER)
+				{
+					// Tangential: perpendicular to angular velocity axis
+					const FVector AngAxis = AngularVelocityVec.GetSafeNormal();
+					const FVector Ref = FMath::Abs(FVector::DotProduct(AngAxis, FVector::UpVector)) < 0.9f
+						? FVector::UpVector : FVector::RightVector;
+					EffectiveDir = FVector::CrossProduct(AngAxis, Ref).GetSafeNormal();
+				}
+				// else: keep actor forward (for linear motion, arrow already follows actor heading)
+			}
+			break;
+		}
+
+		DirectionArrow->SetWorldRotation(EffectiveDir.Rotation());
 	}
 }
 

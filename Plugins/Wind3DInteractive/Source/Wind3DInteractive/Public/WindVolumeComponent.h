@@ -50,6 +50,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Moving", meta = (ClampMin = "0.0", EditCondition = "EmissionType == EWindEmissionType::Moving"))
 	float MoveLength = 500.f;
 
+	/** Angular speed for rotating objects (rad/s). Generates tangential wind from rotation.
+	 *  Used by Moving emission — rotating fans/turbines create wind even when position is stationary. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Moving", meta = (ClampMin = "0.0", EditCondition = "EmissionType == EWindEmissionType::Moving"))
+	float AngularSpeed = 0.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor")
 	bool bEnabled = true;
 

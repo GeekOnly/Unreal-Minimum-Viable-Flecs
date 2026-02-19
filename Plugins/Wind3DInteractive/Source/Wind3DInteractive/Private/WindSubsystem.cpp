@@ -360,7 +360,8 @@ void UWindSubsystem::UpdateWindMotor(
 	bool bEnabled,
 	float TopRadius,
 	float MoveLength,
-	float ImpulseScale)
+	float ImpulseScale,
+	FVector AngularVelocity)
 {
 	if (!ECSWorld || !Handle.IsValid()) return;
 
@@ -383,6 +384,7 @@ void UWindSubsystem::UpdateWindMotor(
 			Data->TopRadius = TopRadius;
 			Data->MoveLength = MoveLength;
 			Data->ImpulseScale = ImpulseScale;
+			Data->AngularVelocity = AngularVelocity;
 			Data->Shape = static_cast<uint8>(Shape);
 			Data->EmissionType = static_cast<uint8>(EmissionType);
 			Data->bEnabled = bEnabled ? 1 : 0;

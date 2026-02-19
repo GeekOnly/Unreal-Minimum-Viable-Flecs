@@ -17,6 +17,10 @@ struct FWindMotorData
 	FVector  PreviousPosition = FVector::ZeroVector;
 	float    MoveLength = 0.f; // trail length behind the motor
 
+	// Angular velocity (rad/s) — for rotating Moving motors (fans, turbines, spinning swords)
+	// Generates tangential wind via ω × r even when position is stationary
+	FVector  AngularVelocity = FVector::ZeroVector;
+
 	// Cylinder shape: top radius can differ from bottom (Radius = bottom, TopRadius = top)
 	float    TopRadius = 0.f; // 0 = same as Radius
 

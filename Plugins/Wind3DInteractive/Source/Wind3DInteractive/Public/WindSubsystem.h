@@ -63,7 +63,8 @@ public:
 		bool bEnabled = true,
 		float TopRadius = 0.f,
 		float MoveLength = 0.f,
-		float ImpulseScale = 1.f);
+		float ImpulseScale = 1.f,
+		FVector AngularVelocity = FVector::ZeroVector);
 
 	UFUNCTION(BlueprintCallable, Category = "Wind3D")
 	void UnregisterWindMotor(FWindEntityHandle Handle);

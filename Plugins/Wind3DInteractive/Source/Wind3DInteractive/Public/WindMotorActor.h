@@ -39,6 +39,8 @@ protected:
 private:
 	FWindEntityHandle ECSHandle;
 	float ElapsedTime = 0.f;
+	FQuat PreviousRotation = FQuat::Identity;
+	bool bRotationInitialized = false;
 
 	UWindSubsystem* GetWindSubsystem() const;
 };

@@ -144,8 +144,9 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 	if (Emission == EWindEmissionType::Moving)
 	{
 		// Union of current + previous position
-		BoundsMin = FVector::Min(Motor.WorldPosition, Motor.PreviousPosition) - FVector(Motor.Radius);
-		BoundsMax = FVector::Max(Motor.WorldPosition, Motor.PreviousPosition) + FVector(Motor.Radius);
+		// Use BoundsExtent (which includes height/radius) for safe padding, instead of just Radius.
+		BoundsMin = FVector::Min(Motor.WorldPosition, Motor.PreviousPosition) - FVector(BoundsExtent);
+		BoundsMax = FVector::Max(Motor.WorldPosition, Motor.PreviousPosition) + FVector(BoundsExtent);
 	}
 	else if (MotorShape == EWindMotorShape::Cylinder)
 	{
@@ -185,29 +186,55 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 
 				if (Emission == EWindEmissionType::Moving)
 				{
-					// Moving motor: capsule along movement path
-					// Project cell onto line segment from PreviousPosition to WorldPosition
-					const FVector MoveDir = Motor.WorldPosition - Motor.PreviousPosition;
-					const float MoveLenSq = MoveDir.SizeSquared();
-
-					FVector ClosestPoint;
-					if (MoveLenSq < SMALL_NUMBER)
+					if (MotorShape == EWindMotorShape::Cylinder)
 					{
-						ClosestPoint = Motor.WorldPosition;
+						// Cylinder shape: use standard cylinder containment logic
+						// (Using current position only - accurate for rotation. Linear trails for cylinders are approximated)
+						const FVector ToCell = CellCenter - Motor.WorldPosition;
+						const float AxisProj = FVector::DotProduct(ToCell, Motor.Direction);
+						const float HalfHeight = Motor.Height * 0.5f;
+
+						if (FMath::Abs(AxisProj) > HalfHeight) continue;
+
+						// Interpolated radius along axis
+						const float EffTopRadius = Motor.TopRadius > 0.f ? Motor.TopRadius : Motor.Radius;
+						const float HeightFrac = (AxisProj + HalfHeight) / Motor.Height;
+						const float LocalRadius = FMath::Lerp(Motor.Radius, EffTopRadius, HeightFrac);
+
+						// Radial distance
+						const FVector RadialVec = ToCell - Motor.Direction * AxisProj;
+						const float RadialDist = RadialVec.Size();
+
+						if (RadialDist > LocalRadius) continue;
+
+						Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - RadialDist / LocalRadius);
 					}
 					else
 					{
-						const float T = FMath::Clamp(
-							FVector::DotProduct(CellCenter - Motor.PreviousPosition, MoveDir) / MoveLenSq,
-							0.f, 1.f);
-						ClosestPoint = Motor.PreviousPosition + MoveDir * T;
+						// Moving motor: capsule along movement path (Sphere/Point)
+						// Project cell onto line segment from PreviousPosition to WorldPosition
+						const FVector MoveDir = Motor.WorldPosition - Motor.PreviousPosition;
+						const float MoveLenSq = MoveDir.SizeSquared();
+
+						FVector ClosestPoint;
+						if (MoveLenSq < SMALL_NUMBER)
+						{
+							ClosestPoint = Motor.WorldPosition;
+						}
+						else
+						{
+							const float T = FMath::Clamp(
+								FVector::DotProduct(CellCenter - Motor.PreviousPosition, MoveDir) / MoveLenSq,
+								0.f, 1.f);
+							ClosestPoint = Motor.PreviousPosition + MoveDir * T;
+						}
+
+						const float DistSq = (CellCenter - ClosestPoint).SizeSquared();
+						if (DistSq > RadiusSq) continue;
+
+						const float Dist = FMath::Sqrt(DistSq);
+						Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / Motor.Radius);
 					}
-
-					const float DistSq = (CellCenter - ClosestPoint).SizeSquared();
-					if (DistSq > RadiusSq) continue;
-
-					const float Dist = FMath::Sqrt(DistSq);
-					Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / Motor.Radius);
 				}
 				else if (MotorShape == EWindMotorShape::Cylinder)
 				{
@@ -268,28 +295,79 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 					break;
 
 				case EWindEmissionType::Moving:
-					{
-						const FVector MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
-						const float MoveDistance = MoveDelta.Size();
+				{
+					const FVector MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
+					const float MoveDistance = MoveDelta.Size();
 
-						// Direct injection (no DeltaTime) — matches GoW reference.
-						// Speed boost: fast movement = stronger pressure wave.
-						// Stationary = 1.0 (same as other emission types).
+					// --- Angular velocity contribution ---
+					// Tangential velocity at this cell: V_tan = ω × r
+					const FVector AngVel = Motor.AngularVelocity;
+					const float AngSpeed = AngVel.Size();
+					FVector TangentialDir = FVector::ZeroVector;
+					float TangentialSpeed = 0.f;
+
+					if (AngSpeed > SMALL_NUMBER)
+					{
+						const FVector TangentialVel = FVector::CrossProduct(AngVel, ToCell);
+						TangentialSpeed = TangentialVel.Size();
+						if (TangentialSpeed > SMALL_NUMBER)
+						{
+							TangentialDir = TangentialVel / TangentialSpeed;
+						}
+					}
+
+					const bool bHasLinearMotion = MoveDistance > 0.1f;
+					const bool bHasAngularMotion = TangentialSpeed > SMALL_NUMBER;
+
+					if (!bHasLinearMotion && !bHasAngularMotion)
+					{
+						// Stationary + no rotation → fallback to directional
+						Force = (Motor.Direction.IsNearlyZero() ? ToCell.GetSafeNormal() : Motor.Direction)
+							* Motor.Strength * Falloff;
+					}
+					else if (bHasLinearMotion && !bHasAngularMotion)
+					{
+						// Linear motion only (original behavior)
 						const float SpeedBoost = FMath::Clamp(
 							MoveDistance / FMath::Max(Motor.Radius * 0.5f, 1.f),
 							0.f, 5.f);
 						InjectionFactor = 1.0f + SpeedBoost * 3.0f;
 
-						// Direction: movement direction when moving, actor forward when stationary
-						const FVector MoveDir = (MoveDistance > 0.1f)
-							? (MoveDelta / MoveDistance)
-							: (Motor.Direction.IsNearlyZero() ? ToCell.GetSafeNormal() : Motor.Direction);
-
-						// 70% forward (movement direction) + 30% radial outward
+						const FVector MoveDir = MoveDelta / MoveDistance;
 						const FVector RadialDir = ToCell.GetSafeNormal();
-						Force = (MoveDir * 0.7f + RadialDir * 0.3f).GetSafeNormal() * Motor.Strength * Falloff;
+						Force = (MoveDir * 0.7f + RadialDir * 0.3f).GetSafeNormal()
+							* Motor.Strength * Falloff;
 					}
-					break;
+					else if (!bHasLinearMotion && bHasAngularMotion)
+					{
+						// Rotation only — tangential wind from ω × r
+						// Use AngSpeed (rad/s) as boost base — radius-independent
+						// At 1 rad/s => boost factor 1. At 5+ rad/s => max boost.
+						const float AngularBoost = FMath::Clamp(AngSpeed / 1.f, 0.f, 5.f);
+						InjectionFactor = 1.0f + AngularBoost * 2.0f;
+
+						Force = TangentialDir * Motor.Strength * Falloff;
+					}
+					else
+					{
+						// Both linear + angular — blend
+						const float SpeedBoost = FMath::Clamp(
+							MoveDistance / FMath::Max(Motor.Radius * 0.5f, 1.f),
+							0.f, 5.f);
+						// AngSpeed-based boost (radius-independent, same as rotation-only branch)
+						const float AngularBoost = FMath::Clamp(AngSpeed / 1.f, 0.f, 5.f);
+						InjectionFactor = 1.0f + SpeedBoost * 2.0f + AngularBoost * 1.5f;
+
+						const FVector MoveDir = MoveDelta / MoveDistance;
+						const FVector RadialDir = ToCell.GetSafeNormal();
+						const FVector LinearDir = (MoveDir * 0.7f + RadialDir * 0.3f).GetSafeNormal();
+
+						// Blend: 60% linear + 40% tangential
+						Force = (LinearDir * 0.6f + TangentialDir * 0.4f).GetSafeNormal()
+							* Motor.Strength * Falloff;
+					}
+				}
+				break;
 				}
 
 				const int32 Idx = CellIndex(X, Y, Z);
