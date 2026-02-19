@@ -1,0 +1,62 @@
+// WindFoliage.usf
+// Wind3DInteractive plugin - foliage animation functions
+
+#ifndef WIND_FOLIAGE_USF
+#define WIND_FOLIAGE_USF
+
+#include "/Plugin/Wind3DInteractive/WindSampling.usf"
+
+// Parameters for tuning
+static const float GlobalBendScale = 0.5f;
+static const float DetailBendScale = 0.2f;
+static const float DetailFrequency = 10.0f;
+
+// Simple sinusoidal noise for detail bending
+float SimpleHash(float3 p)
+{
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float3 CalculateFoliageWPO(
+    Texture3D WindVolume,
+    SamplerState WindVolSampler, // Renamed to avoid collision with auto-generated sampler
+    float3 WorldPos,
+    float3 VertexColor, // R=MainBend, G=DetailPhase
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float Time
+)
+{
+    // 1. Sample Wind
+    float4 WindData = SampleWind(WindVolume, WindVolSampler, WorldPos, VolumeOrigin, VolumeSize);
+    float3 Velocity = WindData.xyz;
+    float Turbulence = WindData.w; // 0..1
+    
+    float Speed = length(Velocity);
+    if (Speed < 1.0f) return float3(0,0,0);
+    
+    float3 WindDir = normalize(Velocity);
+    
+    // 2. Main Bending (Large scale)
+    // Uses VertexColor.R as stiffness mask (0=stiff, 1=flexible)
+    // Squared to allow for stiffer bases
+    float Stiffness = VertexColor.r * VertexColor.r; 
+    
+    // Bend proportional to speed (clamped) and stiffness
+    float3 MainBend = WindDir * min(Speed, 1000.0f) * GlobalBendScale * Stiffness;
+    
+    // 3. Detail Bending (High frequency shiver)
+    // Uses VertexColor.G as phase offset for variation
+    // Animate sine wave based on Time and Turbulence
+    float LocalPhase = dot(WorldPos, float3(0.1, 0.1, 0.1)) + VertexColor.g * 20.0f;
+    float Shiver = sin(Time * DetailFrequency + LocalPhase) * Turbulence * DetailBendScale * Speed;
+    
+    // Apply shiver in wind direction + slight vertical/normal variation
+    float3 DetailBend = WindDir * Shiver;
+    
+    return MainBend + DetailBend;
+}
+
+#endif // WIND_FOLIAGE_USF

@@ -37,6 +37,7 @@ void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	
 	// Initialize texture manager with grid dimensions
 	TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
+	bTextureManagerInitialized = true;
 
 	RegisterComponents();
 	RegisterSystems();
@@ -153,6 +154,7 @@ void UWindSubsystem::Tick(float DeltaTime)
 				TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
 				bTextureManagerInitialized = true;
 			}
+			TextureManager.SetVizZSlice(WindVizZSlice);
 			TextureManager.UpdateFromGrid(*Solver, AmbientWind, OverallPower);
 		}
 
@@ -204,23 +206,25 @@ void UWindSubsystem::UpdateWorldWind(float DeltaTime)
 	// Base rotation around Z-axis
 	const float BaseAngleDeg = WorldWindRotationSpeed * WorldWindTime;
 
-	// Add Perlin-like noise using sin of different frequencies (cheap but organic)
-	const float T = WorldWindTime * WorldWindNoiseFrequency;
-	const float NoiseAngle = WorldWindNoiseAmplitude * (
-		FMath::Sin(T * 2.f * PI) * 0.5f +
-		FMath::Sin(T * 1.37f * 2.f * PI) * 0.3f +
-		FMath::Sin(T * 2.71f * 2.f * PI) * 0.2f
-	);
+	// Perlin Noise for Direction (more organic than sine waves)
+	// Sample noise at (Time * Freq, 0, 0)
+	const float NoiseTime = WorldWindTime * WorldWindNoiseFrequency;
+	const float DirNoise = FMath::PerlinNoise3D(FVector(NoiseTime, 0.f, 0.f));
+	
+	// Map noise [-1, 1] to angle deviation
+	const float NoiseAngle = DirNoise * WorldWindNoiseAmplitude;
 
 	const float FinalAngleDeg = BaseAngleDeg + NoiseAngle;
 	const float AngleRad = FMath::DegreesToRadians(FinalAngleDeg);
 
-	// Speed variation with noise
-	const float SpeedNoise = WorldWindSpeedNoiseAmplitude * (
-		FMath::Sin(T * 0.7f * 2.f * PI) * 0.6f +
-		FMath::Sin(T * 1.9f * 2.f * PI) * 0.4f
-	);
-	const float FinalSpeed = FMath::Max(WorldWindSpeed + SpeedNoise, 0.f);
+	// Perlin Noise for Speed Gusts
+	// Offset sample position to uncorrelate from direction noise
+	const float GustNoise = FMath::PerlinNoise3D(FVector(NoiseTime * GustFrequency, 100.f, 0.f));
+	
+	// Map noise [-1, 1] to speed variation
+	// Gusts are usually additive (0 to 1 range effectively)
+	const float SpeedVariation = (GustNoise + 0.2f) * GustSpeed; // +0.2 bias to make gusts more frequent than lulls
+	const float FinalSpeed = FMath::Max(WorldWindSpeed + SpeedVariation, 0.f);
 
 	// Compute direction on XY plane (rotating around Z)
 	AmbientWind = FVector(
@@ -556,6 +560,11 @@ UVolumeTexture* UWindSubsystem::GetWindVolumeTexture() const
 	return TextureManager.GetWindVolumeTexture();
 }
 
+UTexture2D* UWindSubsystem::GetWindVizTexture() const
+{
+	return TextureManager.GetWindVizTexture();
+}
+
 UMaterialParameterCollection* UWindSubsystem::GetWindMPC() const
 {
 	return TextureManager.GetWindMPC();
@@ -564,4 +573,23 @@ UMaterialParameterCollection* UWindSubsystem::GetWindMPC() const
 void UWindSubsystem::BindWindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName)
 {
 	TextureManager.BindToMaterial(MID, TextureParamName);
+}
+
+UMaterialInstanceDynamic* UWindSubsystem::ApplyWindToComponent(
+	UPrimitiveComponent* Component,
+	UMaterialInterface* WindMaterial,
+	int32 MaterialIndex)
+{
+	if (!Component || !WindMaterial) return nullptr;
+
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(WindMaterial, Component);
+	if (!MID) return nullptr;
+
+	Component->SetMaterial(MaterialIndex, MID);
+	BindWindToMaterial(MID, FName(TEXT("WindVolume")));
+
+	UE_LOG(LogWind3D, Log, TEXT("ApplyWindToComponent: %s slot %d -> MID bound"),
+		*Component->GetName(), MaterialIndex);
+
+	return MID;
 }

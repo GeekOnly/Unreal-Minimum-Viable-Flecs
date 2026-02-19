@@ -20,7 +20,9 @@ public class Wind3DInteractiveEditor : ModuleRules
 			"UnrealEd",
 			"ComponentVisualizers",
 			"Slate",
-			"SlateCore"
+			"SlateCore",
+			"AssetRegistry",
+			"RenderCore"
 		});
 
 		PublicIncludePaths.AddRange(new string[]

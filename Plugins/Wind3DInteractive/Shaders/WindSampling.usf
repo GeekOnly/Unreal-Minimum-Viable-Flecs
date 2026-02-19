@@ -1,10 +1,13 @@
 // WindSampling.usf
 // Wind3DInteractive plugin - material sampling functions
-//
+
+#ifndef WIND_SAMPLING_USF
+#define WIND_SAMPLING_USF
+
 // Usage in Material Custom Expression:
 //   #include "/Plugin/Wind3DInteractive/WindSampling.usf"
 //   return SampleWind(WindVolume, WindVolumeSampler, WorldPos, VolumeOrigin, VolumeSize);
-//
+
 // Inputs:
 //   WindVolume        - Texture3D parameter bound via Blueprint (UVolumeTexture)
 //   WindVolumeSampler - auto-provided sampler
@@ -163,3 +166,5 @@ float4 DebugWindDirection(
 
     return float4(Color, Opacity);
 }
+
+#endif // WIND_SAMPLING_USF

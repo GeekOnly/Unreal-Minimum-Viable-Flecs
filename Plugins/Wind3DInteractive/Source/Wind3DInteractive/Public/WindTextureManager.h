@@ -1,8 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 class UVolumeTexture;
+class UTexture2D;
 class UMaterialParameterCollection;
 class UMaterialInstanceDynamic;
 class UWorld;
@@ -39,11 +41,22 @@ public:
 	/** The 3D volume texture for material binding. */
 	UVolumeTexture* GetWindVolumeTexture() const { return WindVolumeTexture; }
 
+	/** 2D top-down slice texture for UI visualization (PF_B8G8R8A8).
+	 *  R = speed magnitude, G = X velocity direction, B = Y velocity direction, A = 255.
+	 *  Set VizZSlice before UpdateFromGrid to choose which Z layer to show (-1 = center). */
+	UTexture2D* GetWindVizTexture() const { return WindVizTexture; }
+
+	/** Which Z slice to visualize. -1 = auto (center slice). */
+	void SetVizZSlice(int32 ZSlice) { VizZSlice = ZSlice; }
+
 	/** The MPC for material parameter reference. */
 	UMaterialParameterCollection* GetWindMPC() const { return WindMPC; }
 
 	/** Convenience: set wind volume texture on a dynamic material instance. */
-	void BindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName) const;
+	void BindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName);
+
+	/** Update VolumeOrigin/VolumeSize on all bound MIDs. Called each frame from UpdateFromGrid. */
+	void UpdateBoundMIDs(const IWindSolver& Grid);
 
 	bool IsInitialized() const { return bInitialized; }
 
@@ -53,9 +66,11 @@ public:
 private:
 	void CreateVolumeTexture();
 	void CreateMPC();
+	void CreateVizTexture();
 	void EncodeGridToStagingBuffer(const IWindSolver& Grid);
 	void UploadToGPU();
 	void UpdateMPCParams(const IWindSolver& Grid, const FVector& AmbientWind, float OverallPower);
+	void UpdateVizSlice(const IWindSolver& Grid);
 
 	// Cached grid dimensions
 	int32 GridSizeX = 0;
@@ -65,10 +80,18 @@ private:
 	// Staging buffer (game thread) — flat 3D: index = Z * SizeX * SizeY + Y * SizeX + X
 	TArray<FFloat16Color> StagingBuffer;
 
+	// 2D viz slice staging buffer (BGRA, game thread)
+	TArray<uint8> VizStagingBuffer;
+	int32 VizZSlice = -1; // -1 = auto center
+
 	// UE objects (rooted to prevent GC)
 	UVolumeTexture* WindVolumeTexture = nullptr;
+	UTexture2D* WindVizTexture = nullptr;
 	UMaterialParameterCollection* WindMPC = nullptr;
 
 	TWeakObjectPtr<UWorld> CachedWorld;
 	bool bInitialized = false;
+
+	// Tracked MIDs for per-frame VolumeOrigin/VolumeSize updates
+	TArray<TWeakObjectPtr<UMaterialInstanceDynamic>> BoundMIDs;
 };

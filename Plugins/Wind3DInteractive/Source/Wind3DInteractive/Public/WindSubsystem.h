@@ -6,6 +6,7 @@
 #include "WindTypes.h"
 #include "WindTextureManager.h"
 #include "Engine/VolumeTexture.h"
+#include "Engine/Texture2D.h"
 #include "flecs.h"
 #include "WindSubsystem.generated.h"
 
@@ -100,6 +101,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Wind3D|Material")
 	UVolumeTexture* GetWindVolumeTexture() const;
 
+	/** Get the 2D wind visualization texture for UI (PF_B8G8R8A8).
+	 *  R=speed, G=X dir, B=Y dir, A=turbulence. Slice controlled by WindVizZSlice. */
+	UFUNCTION(BlueprintPure, Category = "Wind3D|Debug")
+	UTexture2D* GetWindVizTexture() const;
+
+	/** Z slice index to visualize in GetWindVizTexture(). -1 = center slice. */
+	UPROPERTY(BlueprintReadWrite, Category = "Wind3D|Debug")
+	int32 WindVizZSlice = -1;
+
 	/** Get the wind Material Parameter Collection for referencing in materials. */
 	UFUNCTION(BlueprintPure, Category = "Wind3D|Material")
 	UMaterialParameterCollection* GetWindMPC() const;
@@ -107,6 +117,13 @@ public:
 	/** Convenience: bind wind volume texture to a dynamic material instance. */
 	UFUNCTION(BlueprintCallable, Category = "Wind3D|Material")
 	void BindWindToMaterial(UMaterialInstanceDynamic* MID, FName TextureParamName = "WindVolume");
+
+	/** One-step: create MID from material, bind wind texture, apply to component. Returns the MID. */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Material")
+	UMaterialInstanceDynamic* ApplyWindToComponent(
+		UPrimitiveComponent* Component,
+		UMaterialInterface* WindMaterial,
+		int32 MaterialIndex = 0);
 
 	// --- C++ access ---
 	flecs::world* GetEcsWorld() const { return ECSWorld; }
@@ -135,12 +152,16 @@ public:
 	TEnumAsByte<ECollisionChannel> ObstacleChannel = ECC_WorldStatic;
 
 	// --- World Wind Parameters ---
-	bool bEnableWorldWind = false;
+	bool bEnableWorldWind = true;
 	float WorldWindSpeed = 200.f;
 	float WorldWindRotationSpeed = 15.f;
 	float WorldWindNoiseAmplitude = 30.f;
 	float WorldWindNoiseFrequency = 0.3f;
 	float WorldWindSpeedNoiseAmplitude = 50.f;
+	
+	// Gust parameters (Perlin Noise)
+	float GustFrequency = 0.5f;
+	float GustSpeed = 100.f;
 
 protected:
 	flecs::world* ECSWorld = nullptr;
