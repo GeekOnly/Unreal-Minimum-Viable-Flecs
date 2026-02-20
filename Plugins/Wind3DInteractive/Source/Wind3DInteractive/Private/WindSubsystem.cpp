@@ -75,11 +75,16 @@ void UWindSubsystem::RegisterComponents()
 	if (!ECSWorld) return;
 
 	ECSWorld->component<FWindMotorData>();
+	ECSWorld->component<FWindGridComponent>();
 }
 
 void UWindSubsystem::RegisterSystems()
 {
 	if (!ECSWorld) return;
+
+	// Establish Grid Singleton
+	flecs::entity GridEntity = ECSWorld->entity("WindGridSingleton");
+	GridEntity.set<FWindGridComponent>({Solver.Get()});
 
 	// System: Inject Wind Motors into Grid (runs every frame)
 	ECSWorld->system<const FWindMotorData>("InjectWindMotors")
@@ -89,6 +94,21 @@ void UWindSubsystem::RegisterSystems()
 			for (auto I : It)
 			{
 				Solver->InjectMotor(Motors[I], DT);
+			}
+		});
+
+	// System: Advection via Flecs Singleton
+	ECSWorld->system<const FWindGridComponent>("WindAdvectionSystem")
+		.iter([this](flecs::iter& It, const FWindGridComponent* GridComp)
+		{
+			if (!GridComp) return;
+			const float DT = It.delta_time();
+			for (auto I : It)
+			{
+				if (GridComp[I].SolverPtr)
+				{
+					GridComp[I].SolverPtr->Advect(AdvectionForce, DT, bForwardAdvection);
+				}
 			}
 		});
 }
@@ -124,14 +144,17 @@ void UWindSubsystem::Tick(float DeltaTime)
 		// 2. Decay toward ambient (now with rotating direction)
 		Solver->DecayToAmbient(AmbientWind, DecayRate, DeltaTime);
 
-		// 3. Motor Injection (ECS system)
+		// 2.5 Ensure Flecs Singleton has valid pointer (in case SetupWindGrid re-created Solver)
+		flecs::entity GridEntity = ECSWorld->entity("WindGridSingleton");
+		GridEntity.set<FWindGridComponent>({Solver.Get()});
+
+		// 3. Motor Injection & Advection (ECS pipeline)
 		ECSWorld->progress(DeltaTime);
 
 		// 4. Diffusion — 3D blur to spread wind naturally (multi-pass)
 		Solver->Diffuse(DiffusionRate, DeltaTime, DiffusionIterations);
 
-		// 5. Advection — wind carries velocity downstream (forward + reverse)
-		Solver->Advect(AdvectionForce, DeltaTime, bForwardAdvection);
+		// 5. Advection is now handled inside Flecs progress() above.
 
 		// 5.5. Pressure projection — make velocity divergence-free
 		// This is what causes wind to flow AROUND obstacles instead of stopping
@@ -348,7 +371,7 @@ FWindEntityHandle UWindSubsystem::RegisterWindMotor(
 	// Reuse pooled entity if available
 	if (MotorPool.Num() > 0)
 	{
-		Entity = MotorPool.Pop(false);
+		Entity = MotorPool.Pop(EAllowShrinking::No);
 		Entity.set<FWindMotorData>(InitData);
 		UE_LOG(LogWind3D, Verbose, TEXT("Reused pooled Wind Motor Entity %llu"), Entity.id());
 	}

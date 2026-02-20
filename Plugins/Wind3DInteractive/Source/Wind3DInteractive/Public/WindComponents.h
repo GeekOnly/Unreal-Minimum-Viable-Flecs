@@ -68,3 +68,10 @@ struct FWindVelocityAtEntity
 // Tags
 struct FWindMotorTag {};
 struct FFoliageTag {};
+
+// --- Approach B: Hybrid Flecs Grid ---
+// Singleton component that allows a Flecs system to access and run the CPU array Advection
+struct FWindGridComponent
+{
+	struct IWindSolver* SolverPtr = nullptr;
+};
