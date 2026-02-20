@@ -1,0 +1,32 @@
+// Wind3DInteractive GPU - Decay To Ambient Compute Shader
+// Lerp each cell velocity toward ambient wind direction
+// Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
+
+#include "/Engine/Private/Common.ush"
+
+RWTexture3D<float4> VelocityTex;
+Texture3D<uint>     SolidsTexture;
+
+float3 AmbientWind;
+float  DecayFactor;   // DecayRate * DeltaTime (pre-multiplied on CPU)
+int3   GridSize;
+
+[numthreads(8, 8, 4)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if (any(DTid >= (uint3)GridSize))
+        return;
+
+    // Solid cells: enforce zero velocity
+    if (SolidsTexture[DTid] != 0)
+    {
+        VelocityTex[DTid] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    float4 V = VelocityTex[DTid];
+    V.xyz = lerp(V.xyz, AmbientWind, saturate(DecayFactor));
+    // Turbulence (alpha) also decays toward zero naturally
+    V.w = V.w * (1.0 - saturate(DecayFactor));
+    VelocityTex[DTid] = V;
+}

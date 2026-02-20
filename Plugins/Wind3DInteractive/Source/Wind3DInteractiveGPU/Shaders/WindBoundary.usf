@@ -1,0 +1,43 @@
+// Wind3DInteractive GPU - Boundary Fade-Out Compute Shader
+// Smoothly attenuate velocity near grid edges to prevent hard cutoff
+// Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
+
+#include "/Engine/Private/Common.ush"
+
+RWTexture3D<float4> VelocityTex;
+int3 GridSize;
+int  FadeCells;   // Number of cells to fade over at each edge
+
+float SmoothFade(float t)
+{
+    // SmoothStep: 0→FadeCells maps to alpha 0→1
+    t = saturate(t);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+[numthreads(8, 8, 4)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if (any(DTid >= (uint3)GridSize))
+        return;
+
+    int3 id = (int3)DTid;
+
+    // Distance from each of the 6 faces (in cells)
+    float dXn = id.x;
+    float dXp = GridSize.x - 1 - id.x;
+    float dYn = id.y;
+    float dYp = GridSize.y - 1 - id.y;
+    float dZn = id.z;
+    float dZp = GridSize.z - 1 - id.z;
+
+    // Fade factor: 0 at edge, 1 at FadeCells distance
+    float fade = SmoothFade(dXn / max(FadeCells, 1))
+               * SmoothFade(dXp / max(FadeCells, 1))
+               * SmoothFade(dYn / max(FadeCells, 1))
+               * SmoothFade(dYp / max(FadeCells, 1))
+               * SmoothFade(dZn / max(FadeCells, 1))
+               * SmoothFade(dZp / max(FadeCells, 1));
+
+    VelocityTex[DTid] *= fade;
+}

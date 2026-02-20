@@ -14,6 +14,28 @@ static TAutoConsoleVariable<int32> CVarShowWindDebug(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarUseGPUWind(
+	TEXT("Wind3D.UseGPU"),
+	0,
+	TEXT("Select wind simulation solver.\n")
+	TEXT("0: CPU (default, always available)\n")
+	TEXT("1: GPU Compute Shaders (requires Wind3DInteractiveGPU module)"),
+	ECVF_Default
+);
+
+// ---- Helper: create solver based on current CVar ----
+static TUniquePtr<IWindSolver> CreateSolver()
+{
+	if (CVarUseGPUWind.GetValueOnGameThread() != 0 && FWindSolverFactory::CreateGPU.IsBound())
+	{
+		UE_LOG(LogWind3D, Log, TEXT("Wind3D: Using GPU compute solver"));
+		return FWindSolverFactory::CreateGPU.Execute();
+	}
+	check(FWindSolverFactory::CreateCPU.IsBound());
+	UE_LOG(LogWind3D, Log, TEXT("Wind3D: Using CPU solver"));
+	return FWindSolverFactory::CreateCPU.Execute();
+}
+
 // ... (Top of file remains)
 
 void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -29,9 +51,8 @@ void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// GetEcsWorld()->import<flecs::monitor>();
 	// GetEcsWorld()->set<flecs::Rest>({});
 
-	// Create solver via factory (CPU module registers at startup)
-	check(FWindSolverFactory::CreateCPU.IsBound());
-	Solver = FWindSolverFactory::CreateCPU.Execute();
+	// Create solver via factory (GPU if Wind3D.UseGPU 1, otherwise CPU)
+	Solver = CreateSolver();
 	// Double resolution: 32x32x16 (was 16x16x8)
 	Solver->Initialize(32, 32, 16, 200.f);
 	
@@ -204,9 +225,8 @@ void UWindSubsystem::SetupWindGrid(FVector Origin, float CellSize, int32 InSizeX
     UE_LOG(LogWind3D, Log, TEXT("SetupWindGrid Called: Origin=%s, CellSize=%f, Size=(%d, %d, %d)"), 
         *Origin.ToString(), CellSize, InSizeX, InSizeY, InSizeZ);
 
-	// Re-create solver with new dimensions
-	check(FWindSolverFactory::CreateCPU.IsBound());
-	Solver = FWindSolverFactory::CreateCPU.Execute();
+	// Re-create solver with new dimensions (respects Wind3D.UseGPU CVar)
+	Solver = CreateSolver();
 	Solver->SetWorldOrigin(Origin);
 	Solver->Initialize(
 		FMath::Clamp(InSizeX, 1, 128),

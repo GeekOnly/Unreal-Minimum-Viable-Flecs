@@ -33,7 +33,7 @@
 		{
 			"Name": "Wind3DInteractiveGPU",
 			"Type": "Runtime",
-			"LoadingPhase": "Default",
+			"LoadingPhase": "PostConfigInit",
 			"WhitelistPlatforms": [ "Win64", "Linux", "Mac" ]
 		},
 		{

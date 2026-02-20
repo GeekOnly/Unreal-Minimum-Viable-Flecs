@@ -1,0 +1,34 @@
+// Wind3DInteractive GPU - Grid Shift Compute Shader
+// Shifts velocity data by an integer cell offset (for infinite-scrolling grid)
+// Vacated cells are filled with ambient wind
+// Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
+
+#include "/Engine/Private/Common.ush"
+
+Texture3D<float4>   VelocityIn;
+RWTexture3D<float4> VelocityOut;
+SamplerState        PointSampler;
+
+int3   CellOffset;   // Shift amount in cells (can be negative)
+int3   GridSize;
+float3 AmbientWind;
+
+[numthreads(8, 8, 4)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if (any(DTid >= (uint3)GridSize))
+        return;
+
+    // Source index after shift
+    int3 src = (int3)DTid + CellOffset;
+
+    // Out-of-bounds → fill with ambient
+    if (any(src < 0) || any(src >= GridSize))
+    {
+        VelocityOut[DTid] = float4(AmbientWind, 0);
+    }
+    else
+    {
+        VelocityOut[DTid] = VelocityIn[src];
+    }
+}
