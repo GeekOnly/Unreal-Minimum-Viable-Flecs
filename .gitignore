@@ -78,3 +78,5 @@ Plugins/*/Intermediate/*
 # Cache files for the editor to use
 DerivedDataCache/*
 Plugins/GodOfWarWindSimulation-main
+.agent/FluidFlux
+.agent/FluidNinjaLIVE
