@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "AAA Character Movement and Combat",
+	"Description": "Freeflow combat, warp strike, weapon throw, projectile system, and boost movement inspired by Batman Arkham, FFXV, God of War, and The Pathless.",
+	"Category": "Gameplay",
+	"CreatedBy": "XS Studio",
+	"EnabledByDefault": true,
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "AAACharacterCombat",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
