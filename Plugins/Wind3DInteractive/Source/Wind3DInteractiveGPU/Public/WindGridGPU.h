@@ -7,6 +7,7 @@
 #include "RHICommandList.h"
 #include "RHIGPUReadback.h"
 #include "HAL/CriticalSection.h"
+#include <atomic>
 
 // ============================================================
 // GPU-side motor data — must match FGPUMotorData in WindInjectMotor.usf exactly
@@ -125,7 +126,7 @@ private:
 	// Motor StructuredBuffer (dynamic, uploaded each frame)
 	FBufferRHIRef             MotorBuffer;
 	FShaderResourceViewRHIRef MotorSRV;
-	static constexpr int32 MaxMotors = 64;
+	static constexpr int32 MaxMotors = 256;
 
 	// ---- CPU-side data ----
 
@@ -139,13 +140,24 @@ private:
 
 	// ---- Async Readback (1-frame latency) ----
 	TUniquePtr<FRHIGPUTextureReadback> VelocityReadback;
-	bool bReadbackPending = false;
+	std::atomic<bool> bReadbackPending{false};
 
 	// Readback result buffers — written on render thread, read on game thread
 	// Protected by ReadbackMutex
 	mutable FCriticalSection   ReadbackMutex;
 	TArray<FVector>            ReadbackVelocities;
 	TArray<float>              ReadbackTurbulences;
+
+	// Solids data — written on game thread (ClearSolids/MarkSolid), read for GPU upload
+	// Protected by SolidsMutex
+	mutable FCriticalSection   SolidsMutex;
+
+	// PendingMotors — accumulated on game thread (InjectMotor), flushed in Advect
+	// Protected by MotorMutex
+	mutable FCriticalSection   MotorMutex;
+
+	// Alive token — prevents dangling `this` in ENQUEUE_RENDER_COMMAND lambdas
+	TSharedPtr<bool, ESPMode::ThreadSafe> AliveToken;
 
 	bool bGPUResourcesCreated = false;
 

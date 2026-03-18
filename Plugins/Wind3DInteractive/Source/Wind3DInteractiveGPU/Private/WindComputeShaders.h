@@ -24,6 +24,7 @@ class FWindDecayCS : public FGlobalShader
 		SHADER_PARAMETER_SRV(Texture3D<uint>,     SolidsTexture)
 		SHADER_PARAMETER(FVector3f,               AmbientWind)
 		SHADER_PARAMETER(float,                   DecayFactor)
+		SHADER_PARAMETER(float,                   TurbDecayFactor)
 		SHADER_PARAMETER(FIntVector,              GridSize)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -98,6 +99,7 @@ class FWindInjectMotorCS : public FGlobalShader
 		SHADER_PARAMETER(FVector3f,                         GridOrigin)
 		SHADER_PARAMETER(float,                             GridCellSize)
 		SHADER_PARAMETER(float,                             DeltaTime)
+		SHADER_PARAMETER(float,                             MaxSpeed)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

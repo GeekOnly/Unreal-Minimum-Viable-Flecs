@@ -1,5 +1,5 @@
 // Wind3DInteractive GPU - Motor Injection Compute Shader
-// Processes all motors for each cell (brute force — fine for < 64 motors)
+// Processes all motors for each cell (brute force — fine for < 256 motors)
 // Dispatch: [SizeX/8, SizeY/8, SizeZ/4]
 
 #include "/Engine/Private/Common.ush"
@@ -33,6 +33,7 @@ int3   GridSize;
 float3 GridOrigin;
 float  GridCellSize;
 float  DeltaTime;
+float  MaxSpeed;
 
 float SmoothStep01(float x)
 {
@@ -60,13 +61,45 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
 
         float3 ToCell = CellCenter - Motor.WorldPosition;
         float DistSq = dot(ToCell, ToCell);
-        float RadiusSq = Motor.Radius * Motor.Radius;
+        float Falloff = 0.0;
 
-        // Simple sphere containment (TODO: cylinder/cone shapes)
-        if (DistSq > RadiusSq) continue;
+        // Shape containment test — mirrors CPU WindGridCPU.cpp logic
+        if (Motor.Shape == 0) // Sphere
+        {
+            float RadiusSq = Motor.Radius * Motor.Radius;
+            if (DistSq > RadiusSq) continue;
+            float Dist = sqrt(DistSq);
+            Falloff = SmoothStep01(1.0 - Dist / Motor.Radius);
+        }
+        else if (Motor.Shape == 1) // Cylinder
+        {
+            float AxisProj = dot(ToCell, Motor.Direction);
+            float HalfHeight = Motor.Height * 0.5;
+            if (abs(AxisProj) > HalfHeight) continue;
 
-        float Dist = sqrt(DistSq);
-        float Falloff = SmoothStep01(1.0 - Dist / Motor.Radius);
+            float EffTopRadius = Motor.TopRadius > 0.0 ? Motor.TopRadius : Motor.Radius;
+            float HeightFrac = (AxisProj + HalfHeight) / max(Motor.Height, 0.001);
+            float LocalRadius = lerp(Motor.Radius, EffTopRadius, HeightFrac);
+
+            float3 RadialVec = ToCell - Motor.Direction * AxisProj;
+            float RadialDist = length(RadialVec);
+            if (RadialDist > LocalRadius) continue;
+            Falloff = SmoothStep01(1.0 - RadialDist / max(LocalRadius, 0.001));
+        }
+        else // Cone (Shape == 2)
+        {
+            float AxisProj = dot(ToCell, Motor.Direction);
+            float HalfHeight = Motor.Height * 0.5;
+            if (abs(AxisProj) > HalfHeight) continue;
+
+            float HeightFrac = (AxisProj + HalfHeight) / max(Motor.Height, 0.001);
+            float LocalRadius = lerp(Motor.Radius, Motor.TopRadius, HeightFrac);
+
+            float3 RadialVec = ToCell - Motor.Direction * AxisProj;
+            float RadialDist = length(RadialVec);
+            if (RadialDist > max(LocalRadius, 0.001)) continue;
+            Falloff = SmoothStep01(1.0 - RadialDist / max(LocalRadius, 0.001));
+        }
 
         float3 Force = float3(0, 0, 0);
         float InjectionFactor = 1.0;
@@ -78,31 +111,65 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
         }
         else if (Motor.EmissionType == 1) // Omni
         {
-            Force = normalize(ToCell) * Motor.Strength * Falloff;
+            float ToCellLen = length(ToCell);
+            float3 Dir = ToCellLen > 0.001 ? ToCell / ToCellLen : Motor.Direction;
+            Force = Dir * Motor.Strength * Falloff;
         }
         else if (Motor.EmissionType == 2) // Vortex
         {
             float3 CrossDir = cross(Motor.Direction, normalize(ToCell));
             Force = CrossDir * Motor.Strength * Motor.VortexAngularSpeed * Falloff;
         }
-        else if (Motor.EmissionType == 3) // Moving
+        else if (Motor.EmissionType == 3) // Moving — with angular velocity support
         {
             float3 MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
             float MoveDistance = length(MoveDelta);
 
-            if (MoveDistance > 0.1)
+            float3 AngVel = Motor.AngularVelocity;
+            float AngSpeed = length(AngVel);
+            float3 TangentialDir = float3(0, 0, 0);
+            float TangentialSpeed = 0.0;
+
+            if (AngSpeed > 0.0001)
+            {
+                float3 TangentialVel = cross(AngVel, ToCell);
+                TangentialSpeed = length(TangentialVel);
+                if (TangentialSpeed > 0.0001)
+                    TangentialDir = TangentialVel / TangentialSpeed;
+            }
+
+            bool bHasLinear = MoveDistance > 0.1;
+            bool bHasAngular = TangentialSpeed > 0.0001;
+
+            if (!bHasLinear && !bHasAngular)
+            {
+                float DirLen = length(Motor.Direction);
+                float3 FallbackDir = DirLen > 0.001 ? Motor.Direction : normalize(ToCell);
+                Force = FallbackDir * Motor.Strength * Falloff;
+            }
+            else if (bHasLinear && !bHasAngular)
             {
                 float SpeedBoost = clamp(MoveDistance / max(Motor.Radius * 0.5, 1.0), 0.0, 5.0);
                 InjectionFactor = 1.0 + SpeedBoost * 3.0;
-
                 float3 MoveDir = MoveDelta / MoveDistance;
                 float3 RadialDir = normalize(ToCell);
                 Force = normalize(MoveDir * 0.7 + RadialDir * 0.3) * Motor.Strength * Falloff;
             }
-            else
+            else if (!bHasLinear && bHasAngular)
             {
-                Force = (length(Motor.Direction) > 0.001 ? Motor.Direction : normalize(ToCell))
-                    * Motor.Strength * Falloff;
+                float AngularBoost = clamp(AngSpeed / 1.0, 0.0, 5.0);
+                InjectionFactor = 1.0 + AngularBoost * 2.0;
+                Force = TangentialDir * Motor.Strength * Falloff;
+            }
+            else // Both linear + angular
+            {
+                float SpeedBoost = clamp(MoveDistance / max(Motor.Radius * 0.5, 1.0), 0.0, 5.0);
+                float AngularBoost = clamp(AngSpeed / 1.0, 0.0, 5.0);
+                InjectionFactor = 1.0 + SpeedBoost * 2.0 + AngularBoost * 1.5;
+                float3 MoveDir = MoveDelta / MoveDistance;
+                float3 RadialDir = normalize(ToCell);
+                float3 LinearDir = normalize(MoveDir * 0.7 + RadialDir * 0.3);
+                Force = normalize(LinearDir * 0.6 + TangentialDir * 0.4) * Motor.Strength * Falloff;
             }
         }
 
@@ -113,8 +180,7 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
         Accumulated.w = clamp(Accumulated.w + Falloff * 0.1 * DeltaTime, 0.0, 1.0);
     }
 
-    // Clamp velocity (use first motor's strength as reference — simplified)
-    float MaxSpeed = 1000.0; // TODO: pass as parameter
+    // Clamp velocity — MaxSpeed passed from CPU (matching CPU: max(Strength) * 2.0)
     if (dot(Accumulated.xyz, Accumulated.xyz) > MaxSpeed * MaxSpeed)
     {
         Accumulated.xyz = normalize(Accumulated.xyz) * MaxSpeed;

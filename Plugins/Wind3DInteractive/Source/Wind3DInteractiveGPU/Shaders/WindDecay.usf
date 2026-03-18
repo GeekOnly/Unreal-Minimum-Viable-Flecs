@@ -8,7 +8,8 @@ RWTexture3D<float4> VelocityTex;
 Texture3D<uint>     SolidsTexture;
 
 float3 AmbientWind;
-float  DecayFactor;   // DecayRate * DeltaTime (pre-multiplied on CPU)
+float  DecayFactor;       // DecayRate * DeltaTime (pre-multiplied on CPU)
+float  TurbDecayFactor;   // DecayRate * 0.5 * DeltaTime (half-rate, matching CPU)
 int3   GridSize;
 
 [numthreads(8, 8, 4)]
@@ -26,7 +27,7 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
 
     float4 V = VelocityTex[DTid];
     V.xyz = lerp(V.xyz, AmbientWind, saturate(DecayFactor));
-    // Turbulence (alpha) also decays toward zero naturally
-    V.w = V.w * (1.0 - saturate(DecayFactor));
+    // Turbulence (alpha) decays at half-rate (matching CPU: DecayRate * 0.5 * DeltaTime)
+    V.w = V.w * (1.0 - saturate(TurbDecayFactor));
     VelocityTex[DTid] = V;
 }

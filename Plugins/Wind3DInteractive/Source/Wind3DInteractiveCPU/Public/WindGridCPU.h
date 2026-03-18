@@ -67,6 +67,7 @@ private:
 	TArray<FVector> VelocitiesBack;
 	TArray<float>   Turbulences;
 	TArray<uint8>   Solids;
+	TArray<float>   AdvectWeights; // Reused per-frame (avoids allocation in Advect)
 
 	/** Minimum cells per batch for ParallelFor (avoids overhead on small grids). */
 	static constexpr int32 ParallelMinBatch = 256;

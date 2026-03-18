@@ -45,7 +45,7 @@ void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	char Name[] = {"Wind3D Interactive"};
 	char* Argv = Name;
-	ECSWorld = new flecs::world(1, &Argv);
+	ECSWorld = MakeUnique<flecs::world>(1, &Argv);
 
 	// Flecs Explorer: uncomment when needed (requires available port 27750)
 	// GetEcsWorld()->import<flecs::monitor>();
@@ -75,11 +75,7 @@ void UWindSubsystem::Deinitialize()
 	TextureManager.Shutdown();
 	bTextureManagerInitialized = false;
 
-	if (ECSWorld)
-	{
-		delete ECSWorld;
-		ECSWorld = nullptr;
-	}
+	ECSWorld.Reset();
 
 	UE_LOG(LogWind3D, Log, TEXT("UWindSubsystem deinitialized."));
 	Super::Deinitialize();
@@ -97,6 +93,11 @@ void UWindSubsystem::RegisterComponents()
 
 	ECSWorld->component<FWindMotorData>();
 	ECSWorld->component<FWindGridComponent>();
+	ECSWorld->component<FFoliageWorldPosition>();
+	ECSWorld->component<FWindVelocityAtEntity>();
+	ECSWorld->component<FFoliageInstanceData>();
+	ECSWorld->component<FWindReceiver>();
+	ECSWorld->component<FFoliageTag>();
 }
 
 void UWindSubsystem::RegisterSystems()
@@ -129,6 +130,41 @@ void UWindSubsystem::RegisterSystems()
 				if (GridComp[I].SolverPtr)
 				{
 					GridComp[I].SolverPtr->Advect(AdvectionForce, DT, bForwardAdvection);
+				}
+			}
+		});
+
+	// System: Sample wind velocity at foliage world positions
+	ECSWorld->system<const FFoliageWorldPosition, FWindVelocityAtEntity>("SampleWindForFoliage")
+		.iter([this](flecs::iter& It, const FFoliageWorldPosition* Pos, FWindVelocityAtEntity* WindAt)
+		{
+			for (auto I : It)
+			{
+				WindAt[I].Velocity = Solver->SampleVelocityAt(Pos[I].Location);
+				WindAt[I].Turbulence = Solver->SampleTurbulenceAt(Pos[I].Location);
+			}
+		});
+
+	// System: Spring-damper foliage response — writes CustomPrimitiveData to HISM instances
+	ECSWorld->system<FWindReceiver, const FWindVelocityAtEntity, const FFoliageInstanceData>("FoliageSpringResponse")
+		.iter([this](flecs::iter& It, FWindReceiver* Recv, const FWindVelocityAtEntity* WindAt, const FFoliageInstanceData* Foliage)
+		{
+			const float DT = It.delta_time();
+			for (auto I : It)
+			{
+				const float WindForce = WindAt[I].Velocity.Size() * Recv[I].Sensitivity * 0.001f;
+				const float SpringForce = -Recv[I].StiffnessK * Recv[I].DisplacementCurrent;
+				const float DampForce = -Recv[I].DampingC * Recv[I].DisplacementVelocity;
+				const float Accel = WindForce + SpringForce + DampForce;
+				Recv[I].DisplacementVelocity += Accel * DT;
+				Recv[I].DisplacementCurrent += Recv[I].DisplacementVelocity * DT;
+
+				auto* HISM = static_cast<UHierarchicalInstancedStaticMeshComponent*>(Foliage[I].HISMComponentPtr);
+				if (HISM && Foliage[I].InstanceIndex >= 0)
+				{
+					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, Recv[I].DisplacementCurrent);
+					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotTurb, WindAt[I].Turbulence);
+					DirtyHISMs.Add(HISM);
 				}
 			}
 		});
@@ -233,6 +269,15 @@ void UWindSubsystem::SetupWindGrid(FVector Origin, float CellSize, int32 InSizeX
 		FMath::Clamp(InSizeY, 1, 128),
 		FMath::Clamp(InSizeZ, 1, 64),
 		FMath::Max(CellSize, 10.f));
+
+	// Reinitialize texture manager for new grid dimensions
+	if (bTextureManagerInitialized)
+	{
+		TextureManager.Shutdown();
+		bTextureManagerInitialized = false;
+	}
+	TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
+	bTextureManagerInitialized = true;
 }
 
 void UWindSubsystem::SetAmbientWind(FVector AmbientVelocity)
@@ -340,25 +385,42 @@ void UWindSubsystem::UpdateOccupancy()
 
 	Solver->ClearSolids();
 
-	const FVector HalfCell(Solver->GetCellSize() * 0.5f);
+	// Single overlap query for the entire grid volume (replaces O(n³) per-cell queries)
+	const FVector GridMin = Solver->GetWorldOrigin();
+	const float CS = Solver->GetCellSize();
+	const FVector GridExtent = FVector(
+		Solver->GetSizeX() * CS,
+		Solver->GetSizeY() * CS,
+		Solver->GetSizeZ() * CS);
+	const FVector GridCenter = GridMin + GridExtent * 0.5f;
+
+	TArray<FOverlapResult> Overlaps;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(WindOccupancy), false);
+	World->OverlapMultiByChannel(
+		Overlaps, GridCenter, FQuat::Identity, ObstacleChannel,
+		FCollisionShape::MakeBox(GridExtent * 0.5f), Params);
 
-	for (int32 Z = 0; Z < Solver->GetSizeZ(); Z++)
+	// Rasterize each overlapping component's AABB into the grid
+	for (const FOverlapResult& Result : Overlaps)
 	{
-		for (int32 Y = 0; Y < Solver->GetSizeY(); Y++)
-		{
-			for (int32 X = 0; X < Solver->GetSizeX(); X++)
-			{
-				const FVector CellCenter = Solver->CellToWorld(X, Y, Z);
+		UPrimitiveComponent* Comp = Result.GetComponent();
+		if (!Comp) continue;
 
-				if (World->OverlapBlockingTestByChannel(
-					CellCenter, FQuat::Identity, ObstacleChannel,
-					FCollisionShape::MakeBox(HalfCell), Params))
-				{
+		const FBox Bounds = Comp->Bounds.GetBox();
+		FIntVector MinCell = Solver->WorldToCell(Bounds.Min);
+		FIntVector MaxCell = Solver->WorldToCell(Bounds.Max);
+
+		MinCell.X = FMath::Clamp(MinCell.X, 0, Solver->GetSizeX() - 1);
+		MinCell.Y = FMath::Clamp(MinCell.Y, 0, Solver->GetSizeY() - 1);
+		MinCell.Z = FMath::Clamp(MinCell.Z, 0, Solver->GetSizeZ() - 1);
+		MaxCell.X = FMath::Clamp(MaxCell.X, 0, Solver->GetSizeX() - 1);
+		MaxCell.Y = FMath::Clamp(MaxCell.Y, 0, Solver->GetSizeY() - 1);
+		MaxCell.Z = FMath::Clamp(MaxCell.Z, 0, Solver->GetSizeZ() - 1);
+
+		for (int32 Z = MinCell.Z; Z <= MaxCell.Z; Z++)
+			for (int32 Y = MinCell.Y; Y <= MaxCell.Y; Y++)
+				for (int32 X = MinCell.X; X <= MaxCell.X; X++)
 					Solver->MarkSolid(X, Y, Z);
-				}
-			}
-		}
 	}
 }
 
@@ -389,9 +451,16 @@ FWindEntityHandle UWindSubsystem::RegisterWindMotor(
 	flecs::entity Entity;
 
 	// Reuse pooled entity if available
-	if (MotorPool.Num() > 0)
 	{
-		Entity = MotorPool.Pop(EAllowShrinking::No);
+		FScopeLock Lock(&MotorPoolMutex);
+		if (MotorPool.Num() > 0)
+		{
+			Entity = MotorPool.Pop(EAllowShrinking::No);
+		}
+	}
+
+	if (Entity.is_valid())
+	{
 		Entity.set<FWindMotorData>(InitData);
 		UE_LOG(LogWind3D, Verbose, TEXT("Reused pooled Wind Motor Entity %llu"), Entity.id());
 	}
@@ -465,7 +534,17 @@ void UWindSubsystem::UnregisterWindMotor(FWindEntityHandle Handle)
 			Data->Strength = 0.f;
 		}
 		Entity.remove<FWindMotorData>();
-		MotorPool.Add(Entity);
+		{
+			FScopeLock Lock(&MotorPoolMutex);
+			if (MotorPool.Num() < MaxMotorPoolSize)
+			{
+				MotorPool.Add(Entity);
+			}
+			else
+			{
+				Entity.destruct();
+			}
+		}
 		UE_LOG(LogWind3D, Verbose, TEXT("Pooled Wind Motor Entity %llu (pool size: %d)"), Handle.EntityId, MotorPool.Num());
 	}
 }
@@ -480,19 +559,16 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 	int32 CPDSlotDisplace,
 	int32 CPDSlotTurbulence)
 {
-    // Placeholder: Foliage integration requires a separate component and system
-    // For now, we return an invalid handle or verify if we need to implement FWindFoliageData
-    // Based on the header, we likely need to implement this if it's being called.
-    // However, since we don't have the FWindFoliageData struct visibly defined in the snippets I've seen (it might be in WindComponents.h),
-    // I will implement a basic stub to satisfy the linker. If logic is needed, I'll need to see WindComponents.h.
-    
-    // NOTE: The user's request is to fix linker errors. Implementation details might be secondary if just getting it to compile.
-    // But let's try to be as correct as possible. 
-    // Since I can't see FWindFoliageData, I will just log usage and return a dummy handle for now, 
-    // OR if FWindFoliageData is available in WindComponents.h (which is included), I should use it.
-    // Given I haven't seen WindComponents.h, I'll stick to a safe stub that satisfies the linker.
-    
-    return FWindEntityHandle(); 
+	if (!ECSWorld || !HISM) return FWindEntityHandle();
+
+	flecs::entity E = ECSWorld->entity()
+		.set<FFoliageWorldPosition>({WorldLocation})
+		.set<FWindReceiver>({Sensitivity, 0.f, 0.f, Stiffness, Damping})
+		.set<FWindVelocityAtEntity>({FVector::ZeroVector, 0.f})
+		.set<FFoliageInstanceData>({HISM, InstanceIndex, CPDSlotDisplace, CPDSlotTurbulence})
+		.add<FFoliageTag>();
+
+	return FWindEntityHandle(E.id());
 }
 
 FVector UWindSubsystem::QueryWindAtPosition(FVector WorldPosition) const
@@ -536,11 +612,14 @@ void UWindSubsystem::DrawDebugWind()
 	const float AmbientSpeed = AmbientWind.Size();
 	const float ExcessThreshold = FMath::Max(AmbientSpeed * 0.3f, 30.f); // 30% above ambient
 
-	for (int32 Z = 0; Z < Solver->GetSizeZ(); Z++)
+	// Downsample: limit max ~2000 arrows to avoid thousands of draw calls
+	const int32 Step = FMath::Max(1, FMath::CeilToInt(FMath::Pow((float)TotalCells / 2000.f, 1.f / 3.f)));
+
+	for (int32 Z = 0; Z < Solver->GetSizeZ(); Z += Step)
 	{
-		for (int32 Y = 0; Y < Solver->GetSizeY(); Y++)
+		for (int32 Y = 0; Y < Solver->GetSizeY(); Y += Step)
 		{
-			for (int32 X = 0; X < Solver->GetSizeX(); X++)
+			for (int32 X = 0; X < Solver->GetSizeX(); X += Step)
 			{
 				const int32 Idx = Solver->CellIndex(X, Y, Z);
 				const FVector CellCenter = Solver->CellToWorld(X, Y, Z);
@@ -596,6 +675,18 @@ void UWindSubsystem::DrawDebugWind()
     }
 }
 
+// --- Audio Integration ---
+
+float UWindSubsystem::GetWindIntensityAtPosition(FVector WorldPosition) const
+{
+	return FMath::Clamp(Solver->SampleVelocityAt(WorldPosition).Size() / FWindTextureManager::MaxWindSpeed, 0.f, 1.f);
+}
+
+float UWindSubsystem::GetWindTurbulenceAtPosition(FVector WorldPosition) const
+{
+	return Solver->SampleTurbulenceAt(WorldPosition);
+}
+
 // --- Material Integration ---
 
 UVolumeTexture* UWindSubsystem::GetWindVolumeTexture() const
@@ -624,6 +715,7 @@ UMaterialInstanceDynamic* UWindSubsystem::ApplyWindToComponent(
 	int32 MaterialIndex)
 {
 	if (!Component || !WindMaterial) return nullptr;
+	if (MaterialIndex >= Component->GetNumMaterials()) return nullptr;
 
 	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(WindMaterial, Component);
 	if (!MID) return nullptr;

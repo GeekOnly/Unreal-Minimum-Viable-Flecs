@@ -71,6 +71,10 @@ namespace WindGPUHelper
 // ============================================================
 FWindGridGPU::~FWindGridGPU()
 {
+	if (AliveToken.IsValid())
+	{
+		*AliveToken = false;
+	}
 	ReleaseGPUResources();
 }
 
@@ -122,6 +126,8 @@ void FWindGridGPU::Initialize(int32 InSizeX, int32 InSizeY, int32 InSizeZ, float
 	}
 
 	PendingMotors.Reserve(MaxMotors);
+
+	AliveToken = MakeShared<bool, ESPMode::ThreadSafe>(true);
 
 	ENQUEUE_RENDER_COMMAND(WindGPU_Initialize)(
 		[this](FRHICommandListImmediate& RHICmdList)
@@ -183,9 +189,12 @@ void FWindGridGPU::Reset()
 
 	if (!bGPUResourcesCreated) return;
 
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 	ENQUEUE_RENDER_COMMAND(WindGPU_Reset)(
-		[this](FRHICommandListImmediate& RHICmdList)
+		[this, WeakAlive](FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
 			RHICmdList.ClearUAVFloat(VelocityUAV_A, FVector4f(0.f, 0.f, 0.f, 0.f));
 			RHICmdList.ClearUAVFloat(VelocityUAV_B, FVector4f(0.f, 0.f, 0.f, 0.f));
 			RHICmdList.ClearUAVFloat(PressureUAV_A, FVector4f(0.f, 0.f, 0.f, 0.f));
@@ -199,6 +208,7 @@ void FWindGridGPU::Reset()
 // ============================================================
 void FWindGridGPU::ClearSolids()
 {
+	FScopeLock Lock(&SolidsMutex);
 	FMemory::Memzero(Solids.GetData(), Solids.Num() * sizeof(uint8));
 	FMemory::Memzero(SolidsGPUData.GetData(), SolidsGPUData.Num() * sizeof(uint32));
 }
@@ -206,6 +216,7 @@ void FWindGridGPU::ClearSolids()
 void FWindGridGPU::MarkSolid(int32 X, int32 Y, int32 Z)
 {
 	if (!IsInBounds(X, Y, Z)) return;
+	FScopeLock Lock(&SolidsMutex);
 	const int32 Idx = CellIndex(X, Y, Z);
 	Solids[Idx] = 1;
 	SolidsGPUData[Idx] = 1;
@@ -222,7 +233,7 @@ bool FWindGridGPU::IsSolid(int32 X, int32 Y, int32 Z) const
 // ============================================================
 void FWindGridGPU::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 {
-	if (!Motor.bEnabled || PendingMotors.Num() >= MaxMotors) return;
+	if (!Motor.bEnabled) return;
 
 	FGPUMotorData GPUMotor;
 	// Explicit FVector (double) → FVector3f (float) casts
@@ -243,6 +254,8 @@ void FWindGridGPU::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 	GPUMotor.bEnabled           = Motor.bEnabled;
 	GPUMotor._pad               = 0;
 
+	FScopeLock Lock(&MotorMutex);
+	if (PendingMotors.Num() >= MaxMotors) return;
 	PendingMotors.Add(GPUMotor);
 	PendingDeltaTime = DeltaTime;
 }
@@ -255,19 +268,22 @@ void FWindGridGPU::DecayToAmbient(FVector AmbientWind, float DecayRate, float De
 	if (!bGPUResourcesCreated) return;
 
 	// Try to consume last frame's async readback
-	if (bReadbackPending)
+	if (bReadbackPending.load(std::memory_order_acquire))
 	{
 		FRHIGPUTextureReadback* ReadbackPtr = VelocityReadback.Get();
 		const int32 SnapSizeX = SizeX;
 		const int32 SnapSizeY = SizeY;
 		const int32 SnapSizeZ = SizeZ;
+		TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 
 		ENQUEUE_RENDER_COMMAND(WindGPU_ConsumeReadback)(
-			[this, ReadbackPtr, SnapSizeX, SnapSizeY, SnapSizeZ](FRHICommandListImmediate& RHICmdList)
+			[this, WeakAlive, ReadbackPtr, SnapSizeX, SnapSizeY, SnapSizeZ](FRHICommandListImmediate& RHICmdList)
 			{
+				auto Alive = WeakAlive.Pin();
+				if (!Alive.IsValid() || !(*Alive)) return;
+
 				if (ReadbackPtr && ReadbackPtr->IsReady())
 				{
-					// RowPitchPixels and DepthPitchPixels account for GPU alignment padding
 					int32 RowPitchPixels = 0;
 					int32 DepthPitchPixels = 0;
 					const FFloat16Color* Mapped = static_cast<const FFloat16Color*>(
@@ -297,25 +313,34 @@ void FWindGridGPU::DecayToAmbient(FVector AmbientWind, float DecayRate, float De
 							}
 						}
 						ReadbackPtr->Unlock();
-						bReadbackPending = false;
+						bReadbackPending.store(false, std::memory_order_release);
 					}
 				}
 			}
 		);
 	}
 
-	// Upload CPU solids to GPU texture
-	TArray<uint32> SolidsSnapshot = SolidsGPUData;
+	// Upload CPU solids to GPU texture (snapshot under lock)
+	TArray<uint32> SolidsSnapshot;
+	{
+		FScopeLock Lock(&SolidsMutex);
+		SolidsSnapshot = SolidsGPUData;
+	}
 
 	const FVector3f AmbientWind3f((float)AmbientWind.X, (float)AmbientWind.Y, (float)AmbientWind.Z);
 	const float DecayFactor = FMath::Clamp(DecayRate * DeltaTime, 0.f, 1.f);
+	const float TurbDecayFactor = FMath::Clamp(DecayRate * 0.5f * DeltaTime, 0.f, 1.f); // Match CPU: half-rate decay
 	const FIntVector GridSizeVec(SizeX, SizeY, SizeZ);
 	const FIntVector Groups = GetDispatchGroups();
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 
 	ENQUEUE_RENDER_COMMAND(WindGPU_Decay)(
-		[this, SolidsSnapshot = MoveTemp(SolidsSnapshot), AmbientWind3f, DecayFactor, GridSizeVec, Groups]
+		[this, WeakAlive, SolidsSnapshot = MoveTemp(SolidsSnapshot), AmbientWind3f, DecayFactor, TurbDecayFactor, GridSizeVec, Groups]
 		(FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
+
 			// Upload solids to GPU texture
 			FUpdateTextureRegion3D Region;
 			Region.SrcX   = Region.SrcY   = Region.SrcZ   = 0;
@@ -332,8 +357,6 @@ void FWindGridGPU::DecayToAmbient(FVector AmbientWind, float DecayRate, float De
 				RowPitchBytes, SlicePitchBytes,
 				reinterpret_cast<const uint8*>(SolidsSnapshot.GetData())
 			);
-			// UpdateTexture3D handles its own state transition internally —
-			// no explicit transition needed; SolidsTex is SRV-ready after the call.
 
 			// Dispatch WindDecay.usf
 			TShaderMapRef<FWindDecayCS> CS(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
@@ -341,9 +364,10 @@ void FWindGridGPU::DecayToAmbient(FVector AmbientWind, float DecayRate, float De
 			FWindDecayCS::FParameters Params;
 			Params.VelocityTex   = GetCurrentUAV();
 			Params.SolidsTexture = SolidsSRV;
-			Params.AmbientWind   = AmbientWind3f;
-			Params.DecayFactor   = DecayFactor;
-			Params.GridSize      = GridSizeVec;
+			Params.AmbientWind     = AmbientWind3f;
+			Params.DecayFactor     = DecayFactor;
+			Params.TurbDecayFactor = TurbDecayFactor;
+			Params.GridSize        = GridSizeVec;
 
 			RHICmdList.Transition(FRHITransitionInfo(GetCurrentUAV(), ERHIAccess::SRVCompute, ERHIAccess::UAVCompute));
 			FComputeShaderUtils::Dispatch(RHICmdList, CS, Params, Groups);
@@ -359,8 +383,12 @@ void FWindGridGPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 {
 	if (!bGPUResourcesCreated) return;
 
-	TArray<FGPUMotorData> MotorsCopy = MoveTemp(PendingMotors);
-	PendingMotors.Reset();
+	TArray<FGPUMotorData> MotorsCopy;
+	{
+		FScopeLock Lock(&MotorMutex);
+		MotorsCopy = MoveTemp(PendingMotors);
+		PendingMotors.Reset();
+	}
 
 	const float Factor = (DeltaTime > 0.f)
 		? (AdvectionForce * DeltaTime / FMath::Max(CellSize, 1.f))
@@ -371,11 +399,14 @@ void FWindGridGPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 	const FIntVector Groups = GetDispatchGroups();
 	const float InternalDT = (PendingDeltaTime > 0.f) ? PendingDeltaTime : DeltaTime;
 	const float CellSizeCopy = CellSize;
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 
 	ENQUEUE_RENDER_COMMAND(WindGPU_InjectAndAdvect)(
-		[this, MotorsCopy = MoveTemp(MotorsCopy), Factor, Origin3f, GridSizeVec, Groups, InternalDT, CellSizeCopy]
+		[this, WeakAlive, MotorsCopy = MoveTemp(MotorsCopy), Factor, Origin3f, GridSizeVec, Groups, InternalDT, CellSizeCopy]
 		(FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
 			const int32 MotorCount = FMath::Min(MotorsCopy.Num(), MaxMotors);
 
 			if (MotorCount > 0)
@@ -389,6 +420,13 @@ void FWindGridGPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 				// Dispatch WindInjectMotor.usf
 				TShaderMapRef<FWindInjectMotorCS> InjectCS(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
 
+				// Compute MaxSpeed from strongest motor (matching CPU: Strength * 2.0)
+				float ComputedMaxSpeed = 1000.0f;
+				for (int32 MI = 0; MI < MotorCount; MI++)
+				{
+					ComputedMaxSpeed = FMath::Max(ComputedMaxSpeed, MotorsCopy[MI].Strength * 2.0f);
+				}
+
 				FWindInjectMotorCS::FParameters InjectParams;
 				InjectParams.VelocityTex    = GetCurrentUAV();
 				InjectParams.SolidsTexture  = SolidsSRV;
@@ -398,6 +436,7 @@ void FWindGridGPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 				InjectParams.GridOrigin     = Origin3f;
 				InjectParams.GridCellSize   = CellSizeCopy;
 				InjectParams.DeltaTime      = InternalDT;
+				InjectParams.MaxSpeed       = ComputedMaxSpeed;
 
 				RHICmdList.Transition(FRHITransitionInfo(GetCurrentUAV(), ERHIAccess::SRVCompute, ERHIAccess::UAVCompute));
 				FComputeShaderUtils::Dispatch(RHICmdList, InjectCS, InjectParams, Groups);
@@ -438,9 +477,12 @@ void FWindGridGPU::Diffuse(float DiffusionRate, float DeltaTime, int32 Iteration
 	const FIntVector GridSizeVec(SizeX, SizeY, SizeZ);
 	const FIntVector Groups = GetDispatchGroups();
 
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 	ENQUEUE_RENDER_COMMAND(WindGPU_Diffuse)(
-		[this, Alpha, GridSizeVec, Groups, Iterations](FRHICommandListImmediate& RHICmdList)
+		[this, WeakAlive, Alpha, GridSizeVec, Groups, Iterations](FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
 			TShaderMapRef<FWindDiffuseCS> CS(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
 
 			for (int32 Pass = 0; Pass < Iterations; Pass++)
@@ -472,9 +514,12 @@ void FWindGridGPU::ProjectPressure(int32 Iterations)
 	const FIntVector GridSizeVec(SizeX, SizeY, SizeZ);
 	const FIntVector Groups = GetDispatchGroups();
 
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 	ENQUEUE_RENDER_COMMAND(WindGPU_Pressure)(
-		[this, Iterations, GridSizeVec, Groups](FRHICommandListImmediate& RHICmdList)
+		[this, WeakAlive, Iterations, GridSizeVec, Groups](FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
 			TShaderMapRef<FWindPressureCS> CS(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
 
 			RHICmdList.ClearUAVFloat(PressureUAV_A, FVector4f(0.f, 0.f, 0.f, 0.f));
@@ -535,12 +580,15 @@ void FWindGridGPU::BoundaryFadeOut(int32 FadeCells)
 	// sees it as true even if the render command hasn't executed yet.
 	if (VelocityReadback.IsValid())
 	{
-		bReadbackPending = true;
+		bReadbackPending.store(true, std::memory_order_release);
 	}
 
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 	ENQUEUE_RENDER_COMMAND(WindGPU_BoundaryAndReadback)(
-		[this, FadeCells, GridSizeVec, Groups](FRHICommandListImmediate& RHICmdList)
+		[this, WeakAlive, FadeCells, GridSizeVec, Groups](FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
 			if (FadeCells > 0)
 			{
 				TShaderMapRef<FWindBoundaryCS> CS(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
@@ -578,9 +626,12 @@ void FWindGridGPU::ShiftData(FIntVector CellOffset, FVector AmbientWind)
 	const FIntVector GridSizeVec(SizeX, SizeY, SizeZ);
 	const FIntVector Groups = GetDispatchGroups();
 
+	TWeakPtr<bool, ESPMode::ThreadSafe> WeakAlive = AliveToken;
 	ENQUEUE_RENDER_COMMAND(WindGPU_Shift)(
-		[this, CellOffset, Ambient3f, GridSizeVec, Groups](FRHICommandListImmediate& RHICmdList)
+		[this, WeakAlive, CellOffset, Ambient3f, GridSizeVec, Groups](FRHICommandListImmediate& RHICmdList)
 		{
+			auto Alive = WeakAlive.Pin();
+			if (!Alive.IsValid() || !(*Alive)) return;
 			TShaderMapRef<FWindShiftCS> CS(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
 
 			FWindShiftCS::FParameters Params;
@@ -610,6 +661,8 @@ FVector FWindGridGPU::SampleVelocityAt(const FVector& WorldPos) const
 
 FVector FWindGridGPU::SampleVelocityAtLocal(float Lx, float Ly, float Lz) const
 {
+	if (!FMath::IsFinite(Lx) || !FMath::IsFinite(Ly) || !FMath::IsFinite(Lz))
+		return FVector::ZeroVector;
 	const int32 X0 = FMath::FloorToInt(Lx);
 	const int32 Y0 = FMath::FloorToInt(Ly);
 	const int32 Z0 = FMath::FloorToInt(Lz);

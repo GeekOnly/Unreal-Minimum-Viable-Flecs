@@ -125,8 +125,18 @@ public:
 		UMaterialInterface* WindMaterial,
 		int32 MaterialIndex = 0);
 
+	// --- Audio Integration ---
+
+	/** Get normalized wind intensity at a world position (0.0 = calm, 1.0 = MaxWindSpeed). */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Audio")
+	float GetWindIntensityAtPosition(FVector WorldPosition) const;
+
+	/** Get raw turbulence value at a world position (0.0 = laminar, 1.0 = fully turbulent). */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Audio")
+	float GetWindTurbulenceAtPosition(FVector WorldPosition) const;
+
 	// --- C++ access ---
-	flecs::world* GetEcsWorld() const { return ECSWorld; }
+	flecs::world* GetEcsWorld() const { return ECSWorld.Get(); }
 	IWindSolver& GetSolver() const { check(Solver.IsValid()); return *Solver; }
 
 	// Legacy compat — prefer GetSolver()
@@ -164,7 +174,7 @@ public:
 	float GustSpeed = 100.f;
 
 protected:
-	flecs::world* ECSWorld = nullptr;
+	TUniquePtr<flecs::world> ECSWorld;
 	TUniquePtr<IWindSolver> Solver;
 	FVector AmbientWind = FVector(100.f, 0.f, 0.f);
 
@@ -192,6 +202,8 @@ private:
 
 	// Motor entity pool — recycled on unregister, reused on register
 	TArray<flecs::entity> MotorPool;
+	mutable FCriticalSection MotorPoolMutex;
+	static constexpr int32 MaxMotorPoolSize = 128;
 
 	// Material integration
 	FWindTextureManager TextureManager;

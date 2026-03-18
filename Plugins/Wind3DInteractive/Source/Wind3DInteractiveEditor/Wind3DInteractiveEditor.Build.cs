@@ -16,7 +16,6 @@ public class Wind3DInteractiveEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"FlecsLibrary",
 			"UnrealEd",
 			"ComponentVisualizers",
 			"Slate",

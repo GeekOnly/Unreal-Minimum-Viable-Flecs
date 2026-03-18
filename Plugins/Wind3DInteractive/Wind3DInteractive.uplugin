@@ -34,7 +34,7 @@
 			"Name": "Wind3DInteractiveGPU",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [ "Win64", "Linux", "Mac" ]
+			"PlatformAllowList": [ "Win64", "Linux", "Mac" ]
 		},
 		{
 			"Name": "Wind3DInteractiveEditor",

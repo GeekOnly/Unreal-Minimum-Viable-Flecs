@@ -17,6 +17,7 @@ void FWindGridCPU::Initialize(int32 InSizeX, int32 InSizeY, int32 InSizeZ, float
 	VelocitiesBack.SetNumZeroed(Total);
 	Turbulences.SetNumZeroed(Total);
 	Solids.SetNumZeroed(Total);
+	AdvectWeights.SetNumZeroed(Total);
 }
 
 void FWindGridCPU::Reset()
@@ -96,6 +97,8 @@ FVector FWindGridCPU::CellToWorld(int32 X, int32 Y, int32 Z) const
 FVector FWindGridCPU::SampleVelocityAt(const FVector& WorldPos) const
 {
 	const FVector Local = (WorldPos - WorldOrigin) / CellSize - FVector(0.5f);
+	if (!FMath::IsFinite(Local.X) || !FMath::IsFinite(Local.Y) || !FMath::IsFinite(Local.Z))
+		return FVector::ZeroVector;
 	const int32 X0 = FMath::FloorToInt(Local.X);
 	const int32 Y0 = FMath::FloorToInt(Local.Y);
 	const int32 Z0 = FMath::FloorToInt(Local.Z);
@@ -128,6 +131,8 @@ FVector FWindGridCPU::SampleVelocityAt(const FVector& WorldPos) const
 
 FVector FWindGridCPU::SampleVelocityAtLocal(float Lx, float Ly, float Lz) const
 {
+	if (!FMath::IsFinite(Lx) || !FMath::IsFinite(Ly) || !FMath::IsFinite(Lz))
+		return FVector::ZeroVector;
 	const int32 X0 = FMath::FloorToInt(Lx);
 	const int32 Y0 = FMath::FloorToInt(Ly);
 	const int32 Z0 = FMath::FloorToInt(Lz);
@@ -504,8 +509,7 @@ void FWindGridCPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 	{
 		FMemory::Memzero(VelocitiesBack.GetData(), VelocitiesBack.Num() * sizeof(FVector));
 
-		TArray<float> Weights;
-		Weights.SetNumZeroed(Total);
+		FMemory::Memzero(AdvectWeights.GetData(), AdvectWeights.Num() * sizeof(float));
 
 		// Forward splatting (not parallelizable due to write conflicts on target cells)
 		for (int32 Z = 0; Z < SizeZ; Z++)
@@ -551,7 +555,7 @@ void FWindGridCPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 
 								const int32 TgtIdx = CellIndex(Cx, Cy, Cz);
 								VelocitiesBack[TgtIdx] += Vel * W;
-								Weights[TgtIdx] += W;
+								AdvectWeights[TgtIdx] += W;
 							}
 						}
 					}
@@ -562,9 +566,9 @@ void FWindGridCPU::Advect(float AdvectionForce, float DeltaTime, bool bForwardPa
 		// Normalize
 		for (int32 I = 0; I < Total; I++)
 		{
-			if (Weights[I] > SMALL_NUMBER)
+			if (AdvectWeights[I] > SMALL_NUMBER)
 			{
-				VelocitiesBack[I] /= Weights[I];
+				VelocitiesBack[I] /= AdvectWeights[I];
 			}
 			else
 			{

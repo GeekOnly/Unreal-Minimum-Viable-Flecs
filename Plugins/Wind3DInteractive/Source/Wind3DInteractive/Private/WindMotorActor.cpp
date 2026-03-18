@@ -118,11 +118,8 @@ void AWindMotorActor::Tick(float DeltaTime)
 			float AngleRad;
 			DeltaQuat.ToAxisAndAngle(Axis, AngleRad);
 
-			// Normalize angle to [-PI, PI]
-			if (AngleRad > PI)
-			{
-				AngleRad -= 2.f * PI;
-			}
+			// Normalize angle to [-PI, PI] (handles arbitrary magnitude)
+			AngleRad = FMath::Fmod(AngleRad + PI, 2.f * PI) - PI;
 
 			// Angular velocity = axis * angle / dt (rad/s)
 			if (FMath::Abs(AngleRad) > SMALL_NUMBER)
