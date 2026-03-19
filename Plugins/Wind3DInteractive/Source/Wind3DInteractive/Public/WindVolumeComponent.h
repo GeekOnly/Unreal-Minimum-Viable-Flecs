@@ -58,6 +58,27 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor")
 	bool bEnabled = true;
 
+	// --- Wave Mode ---
+
+	/** Enable pulsing wave output. Simulates real fan blade beat — wind strength oscillates between WaveMin..1.0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Wave")
+	bool bWaveMode = false;
+
+	/** Pulses per second. Fan with 3 blades at 2 RPS = 6 Hz. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Wave",
+		meta = (ClampMin = "0.01", ClampMax = "30.0", EditCondition = "bWaveMode"))
+	float WaveFrequency = 2.f;
+
+	/** Minimum strength factor at wave trough (0 = full off, 0.2 = gentle lull). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Wave",
+		meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bWaveMode"))
+	float WaveMin = 0.1f;
+
+	/** Phase offset in seconds — stagger multiple motors so waves don't sync up. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Wave",
+		meta = (EditCondition = "bWaveMode"))
+	float WavePhaseOffset = 0.f;
+
 	// --- Lifetime & Curves (GoW-style) ---
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Motor|Lifetime")

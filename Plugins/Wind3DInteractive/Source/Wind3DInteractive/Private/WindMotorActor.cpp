@@ -61,15 +61,26 @@ void AWindMotorActor::Tick(float DeltaTime)
 
 	if (!WindVolumeComp) return;
 
+	// Always accumulate time (used by both WaveMode and Lifetime)
+	ElapsedTime += DeltaTime;
+
 	// Evaluate lifetime and curves
 	float EffectiveStrength = WindVolumeComp->Strength;
 	float EffectiveRadius = WindVolumeComp->Radius;
 	bool bEffectiveEnabled = WindVolumeComp->bEnabled;
 
+	// Wave mode: modulate strength with sine pulse (simulates fan blade beat)
+	if (WindVolumeComp->bWaveMode && bEffectiveEnabled)
+	{
+		const float Phase = (ElapsedTime + WindVolumeComp->WavePhaseOffset)
+			* 2.f * PI * WindVolumeComp->WaveFrequency;
+		// sine maps [-1,1] → t maps [0,1]
+		const float t = (FMath::Sin(Phase) + 1.f) * 0.5f;
+		EffectiveStrength *= FMath::Lerp(WindVolumeComp->WaveMin, 1.f, t);
+	}
+
 	if (WindVolumeComp->bUseLifetime)
 	{
-		ElapsedTime += DeltaTime;
-
 		if (ElapsedTime >= WindVolumeComp->LifeTime)
 		{
 			if (WindVolumeComp->bLoop)

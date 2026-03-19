@@ -54,8 +54,8 @@ void UWindSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	// Create solver via factory (GPU if Wind3D.UseGPU 1, otherwise CPU)
 	Solver = CreateSolver();
-	// Double resolution: 32x32x16 (was 16x16x8)
-	Solver->Initialize(32, 32, 16, 200.f);
+	// Default grid matches WindFieldSetupActor defaults (16x16x8)
+	Solver->Initialize(16, 16, 8, 200.f);
 	
 	// Initialize texture manager with grid dimensions
 	TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
