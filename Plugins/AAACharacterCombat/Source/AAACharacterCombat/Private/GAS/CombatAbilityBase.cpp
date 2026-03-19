@@ -158,7 +158,7 @@ void UCombatAbilityBase::SetMotionWarpTarget(FName WarpName, FVector Location, F
 		FMotionWarpingTarget WarpTarget;
 		WarpTarget.Name = WarpName;
 		WarpTarget.Location = Location;
-		WarpTarget.Rotation = FQuat(Rotation);
+		WarpTarget.Rotation = Rotation;
 		MotionWarp->AddOrUpdateWarpTarget(WarpTarget);
 	}
 }

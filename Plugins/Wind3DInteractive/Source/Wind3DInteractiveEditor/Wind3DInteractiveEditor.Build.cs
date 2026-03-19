@@ -21,7 +21,8 @@ public class Wind3DInteractiveEditor : ModuleRules
 			"Slate",
 			"SlateCore",
 			"AssetRegistry",
-			"RenderCore"
+			"RenderCore",
+			"FlecsLibrary"
 		});
 
 		PublicIncludePaths.AddRange(new string[]

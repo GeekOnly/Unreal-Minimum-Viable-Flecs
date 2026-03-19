@@ -8,17 +8,17 @@ UGC_HitImpact::UGC_HitImpact()
 {
 }
 
-bool UGC_HitImpact::HandlesEvent(EGameplayCueEvent EventType) const
+bool UGC_HitImpact::HandlesEvent(EGameplayCueEvent::Type EventType) const
 {
-	return EventType == EGameplayCueEvent::Executed;
+	return EventType == EGameplayCueEvent::Type::Executed;
 }
 
 void UGC_HitImpact::HandleGameplayCue(
 	AActor* MyTarget,
-	EGameplayCueEvent EventType,
+	EGameplayCueEvent::Type EventType,
 	const FGameplayCueParameters& Parameters)
 {
-	if (EventType == EGameplayCueEvent::Executed)
+	if (EventType == EGameplayCueEvent::Type::Executed)
 	{
 		OnExecute_Implementation(MyTarget, Parameters);
 	}

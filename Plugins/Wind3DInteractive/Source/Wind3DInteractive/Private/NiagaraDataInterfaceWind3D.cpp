@@ -12,7 +12,7 @@ static const FName SampleWindIntensityName(TEXT("SampleWindIntensity"));
 UNiagaraDataInterfaceWind3D::UNiagaraDataInterfaceWind3D(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Proxy.Reset(new FNiagaraDataInterfaceProxyRW());
+	// CPU-only DI – base class handles proxy automatically
 }
 
 void UNiagaraDataInterfaceWind3D::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)

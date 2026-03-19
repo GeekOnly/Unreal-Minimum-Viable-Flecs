@@ -149,7 +149,7 @@ void ACombatCharacterBase::InitializeAbilitySystem()
 	if (!AttributeSet)
 	{
 		AttributeSet = NewObject<UCombatAttributeSet>(this);
-		AbilitySystemComp->AddAttributeSetSubobject(AttributeSet);
+		AbilitySystemComp->AddAttributeSetSubobject(AttributeSet.Get());
 		AbilitySystemComp->ForceReplication();
 	}
 

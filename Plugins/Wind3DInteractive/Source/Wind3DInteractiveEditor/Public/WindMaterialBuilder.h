@@ -58,10 +58,4 @@ public:
 
 	/** Create a neutral (gray) volume texture asset. */
 	static class UVolumeTexture* CreateNeutralWindTexture(const FString& PackagePath);
-
-
-private:
-	/** Register the console command on module load. */
-	friend class FWind3DInteractiveEditorModule;
-	static void RegisterConsoleCommands();
 };

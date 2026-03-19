@@ -70,19 +70,14 @@ protected:
 	UFUNCTION(BlueprintCallable, Category = "Combat|Ability")
 	void ExecuteHitResponse(AActor* Target, const UCombatAttackData* AttackData, const FHitResult& HitResult);
 
-	/** Montage ended callback */
+public:
+	/** Montage ended callback (public so derived classes can bind delegates to it) */
 	UFUNCTION()
 	void OnMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
-	// --- Properties ---
-
-	/** Tags added to owner while this ability is active */
-	UPROPERTY(EditDefaultsOnly, Category = "Combat|Ability")
-	FGameplayTagContainer ActivationOwnedTags;
-
-	/** Tags that cancel this ability if applied to owner */
-	UPROPERTY(EditDefaultsOnly, Category = "Combat|Ability")
-	FGameplayTagContainer CancelAbilityTags;
+	// Note: Use the inherited UGameplayAbility properties directly:
+	// - ActivationOwnedTags (tags added to owner while active)
+	// - CancelAbilitiesWithTag (tags that cancel this ability)
 
 private:
 	FDelegateHandle MontageEndedDelegateHandle;

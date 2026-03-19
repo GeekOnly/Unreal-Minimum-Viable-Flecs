@@ -21,11 +21,11 @@ class AAACHARACTERCOMBAT_API UGC_HitImpact : public UGameplayCueNotify_Static
 public:
 	UGC_HitImpact();
 
-	virtual bool HandlesEvent(EGameplayCueEvent EventType) const override;
+	virtual bool HandlesEvent(EGameplayCueEvent::Type EventType) const override;
 
 	virtual void HandleGameplayCue(
 		AActor* MyTarget,
-		EGameplayCueEvent EventType,
+		EGameplayCueEvent::Type EventType,
 		const FGameplayCueParameters& Parameters) override;
 
 protected:

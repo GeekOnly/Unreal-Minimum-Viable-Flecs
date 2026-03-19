@@ -7,7 +7,6 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
-#include "DrawDebugHelpers.h"
 
 static TAutoConsoleVariable<int32> CVarShowWindField(
 	TEXT("Wind3D.ShowWindField"),
@@ -46,7 +45,6 @@ void FWindMotorVisualizer::DrawVisualization(
 	DrawEmissionArrows(ActorTransform, static_cast<uint8>(WindComp->EmissionType),
 		WindComp->Radius, WindComp->Strength, PDI);
 
-	// Draw wind field debug visualization (CVar: Wind3D.ShowWindField 1/2)
 	UWorld* World = Component->GetWorld();
 	if (!World) return;
 
@@ -183,6 +181,29 @@ void FWindMotorVisualizer::DrawEmissionArrows(const FTransform& T, uint8 Emissio
 		}
 		break;
 	}
+	case EWindEmissionType::Moving:
+	{
+		// Forward arrows showing motion direction
+		const int32 Num = 5;
+		for (int32 I = 0; I < Num; I++)
+		{
+			const float Frac = (float)I / (float)(Num - 1) - 0.5f;
+			const FVector Start = Center + Right * Frac * Radius;
+			const FVector End = Start + Forward * ArrowLen;
+			PDI->DrawLine(Start, End, FColor::Orange, SDPG_Foreground);
+			PDI->DrawLine(End, End - Forward * 15.f + Right * 8.f, FColor::Orange, SDPG_Foreground);
+			PDI->DrawLine(End, End - Forward * 15.f - Right * 8.f, FColor::Orange, SDPG_Foreground);
+		}
+		// Wake trail behind the motor
+		for (int32 I = 1; I <= 4; I++)
+		{
+			const float T = (float)I * 0.25f;
+			const FVector P = Center - Forward * Radius * T;
+			const float S = 8.f * (1.f - T * 0.5f);
+			PDI->DrawLine(P - Right * S, P + Right * S, FColor(255, 140, 0), SDPG_Foreground);
+		}
+		break;
+	}
 	}
 }
 
@@ -228,7 +249,6 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
 	if (!World) return;
 
 	UWindSubsystem* WindSys = World->GetSubsystem<UWindSubsystem>();
-
 	if (!WindSys) return;
 
 	const IWindSolver& Grid = WindSys->GetWindGrid();
@@ -236,19 +256,20 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
 	// Always draw the grid bounding box so you can see coverage
 	DrawGridBounds(Grid, PDI);
 
+	const TArray<FVector>& Vels = Grid.GetVelocities();
+	const int32 TotalCells = Vels.Num();
+	if (TotalCells == 0) return;
+
 	const float MaxArrowLen = Grid.GetCellSize() * 0.8f;
 
-	// Use DrawDebugDirectionalArrow instead (better visualization) but need DrawDebugHelpers.h
-	// Assuming DrawDebugHelpers.h is included or available via CoreMinimal/Engine.
-    // If not, we fall back to PDI lines or use DrawDebugDirectionalArrow if we add the include.
-    // Let's use PDI lines for now to be safe as they don't require DrawDebugHelpers.h
-    // But modify them to look like arrows.
-    
-	for (int32 Z = 0; Z < Grid.GetSizeZ(); Z++)
+	// Downsample: limit to ~2000 arrows to keep editor responsive
+	const int32 Step = FMath::Max(1, FMath::CeilToInt(FMath::Pow((float)TotalCells / 2000.f, 1.f / 3.f)));
+
+	for (int32 Z = 0; Z < Grid.GetSizeZ(); Z += Step)
 	{
-		for (int32 Y = 0; Y < Grid.GetSizeY(); Y++)
+		for (int32 Y = 0; Y < Grid.GetSizeY(); Y += Step)
 		{
-			for (int32 X = 0; X < Grid.GetSizeX(); X++)
+			for (int32 X = 0; X < Grid.GetSizeX(); X += Step)
 			{
 				const FVector CellCenter = Grid.CellToWorld(X, Y, Z);
 
@@ -256,12 +277,13 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
 				if (!View->ViewFrustum.IntersectBox(CellCenter, FVector(Grid.GetCellSize() * 0.5f)))
 					continue;
 
-				const FVector Vel = Grid.SampleVelocityAt(CellCenter);
+				// Direct array access — no trilinear interpolation needed at cell centers
+				const int32 Idx = Grid.CellIndex(X, Y, Z);
+				const FVector& Vel = Vels[Idx];
 				const float Speed = Vel.Size();
 
 				if (Speed < 1.f)
 				{
-					// ShowLevel 2: draw a small grey cross at empty cells so grid layout is visible
 					if (ShowLevel >= 2)
 					{
 						const float S = Grid.GetCellSize() * 0.05f;
@@ -273,17 +295,24 @@ void FWindMotorVisualizer::DrawWindFieldDebug(UWorld* World, const FSceneView* V
 					continue;
 				}
 
-				// Draw wind arrow (green→red by speed)
-				const FVector Dir = Vel / Speed;
-				const float ArrowLen = FMath::Clamp(Speed * 0.1f, 5.f, MaxArrowLen);
-				const uint8 Intensity = static_cast<uint8>(FMath::Clamp(Speed / 500.f * 255.f, 30.f, 255.f));
+				// Color gradient: Green -> Yellow -> Orange -> Red by speed
 				FColor Color = FColor::Green;
 				if (Speed > 500.f) Color = FColor::Yellow;
 				if (Speed > 1000.f) Color = FColor::Orange;
 				if (Speed > 1500.f) Color = FColor::Red;
 
-				DrawDebugDirectionalArrow(World, CellCenter, CellCenter + Dir * ArrowLen, 
-					50.f, Color, false, 0.f, 0, 5.f);
+				// Arrow via PDI (consistent with rest of visualizer, works in all editor viewports)
+				const FVector Dir = Vel / Speed;
+				const float ArrowLen = FMath::Clamp(Speed * 0.1f, 5.f, MaxArrowLen);
+				const FVector Tip = CellCenter + Dir * ArrowLen;
+				PDI->DrawLine(CellCenter, Tip, Color, SDPG_World);
+
+				// Arrowhead
+				const float HeadLen = ArrowLen * 0.25f;
+				FVector Perp, PerpUnused;
+				Dir.FindBestAxisVectors(Perp, PerpUnused);
+				PDI->DrawLine(Tip, Tip - Dir * HeadLen + Perp * HeadLen * 0.4f, Color, SDPG_World);
+				PDI->DrawLine(Tip, Tip - Dir * HeadLen - Perp * HeadLen * 0.4f, Color, SDPG_World);
 			}
 		}
 	}

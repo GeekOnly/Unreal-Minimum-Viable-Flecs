@@ -12,6 +12,7 @@
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionComponentMask.h"
 #include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
 
 #include "Engine/VolumeTexture.h"
 #include "Components/PrimitiveComponent.h"
@@ -51,7 +52,7 @@ static FAutoConsoleCommand GWindCreateMaterialCmd(
 
 static FAutoConsoleCommand GWindCreateDebugMaterialCmd(
 	TEXT("Wind3D.CreateDebugMaterial"),
-	TEXT("Creates a dubug wind material. Usage: Wind3D.CreateDebugMaterial [/Game/Wind/M_WindDebug_Auto]"),
+	TEXT("Creates a debug wind material. Usage: Wind3D.CreateDebugMaterial [/Game/Wind/M_WindDebug_Auto]"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 	{
 		FString Path = TEXT("/Game/Wind/M_WindDebug_Auto");
@@ -81,11 +82,7 @@ static T* AddExpression(UMaterial* Mat, int32 PosX = 0, int32 PosY = 0)
 	T* Expr = NewObject<T>(Mat);
 	Expr->MaterialExpressionEditorX = PosX;
 	Expr->MaterialExpressionEditorY = PosY;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
 	Mat->GetEditorOnlyData()->ExpressionCollection.AddExpression(Expr);
-#else
-	Mat->Expressions.Add(Expr);
-#endif
 	return Expr;
 }
 
@@ -133,6 +130,11 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 
 	// -- Time --
 	auto* TimeNode = AddExpression<UMaterialExpressionTime>(Mat, -1600, 700);
+
+	// -- MaxWindSpeed (ScalarParameter) --
+	auto* MaxSpeedParam = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1600, 800);
+	MaxSpeedParam->ParameterName = TEXT("MaxWindSpeed");
+	MaxSpeedParam->DefaultValue = 2000.f;
 
 	// -- VertexColor --
 	auto* VertColor = AddExpression<UMaterialExpressionVertexColor>(Mat, -1600, 900);
@@ -206,7 +208,7 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 		"float Fade = saturate(min(min(Edge.x, Edge.y), Edge.z) * 10.0f);\n"
 		"\n"
 		"// Decode velocity from texture: [0,1] -> [-MaxSpeed, +MaxSpeed]\n"
-		"float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * 2000.0f * Fade;\n"
+		"float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * MaxWindSpeed * Fade;\n"
 		"float Turbulence = Texel.a * Fade;\n"
 		"float Speed = length(Velocity);\n"
 		"\n"
@@ -271,6 +273,12 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 		FCustomInput In;
 		In.InputName = TEXT("Flex");
 		In.Input.Connect(1, VertColor); // Output index 1 = R channel
+		WindWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In;
+		In.InputName = TEXT("MaxWindSpeed");
+		In.Input.Connect(0, MaxSpeedParam);
 		WindWPO->Inputs.Add(In);
 	}
 
@@ -350,6 +358,11 @@ UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
 	SizeParam->ParameterName = TEXT("VolumeSize");
 	SizeParam->DefaultValue = FLinearColor(6400, 6400, 3200, 0);
 
+	// -- MaxWindSpeed (ScalarParameter) --
+	auto* MaxSpeedParam = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1200, 600);
+	MaxSpeedParam->ParameterName = TEXT("MaxWindSpeed");
+	MaxSpeedParam->DefaultValue = 2000.f;
+
 	// -- TextureSampleParameterVolume: WindVolume --
 	auto* VolTexSample = AddExpression<UMaterialExpressionTextureSampleParameterVolume>(Mat, -800, 300);
 	VolTexSample->ParameterName = TEXT("WindVolume");
@@ -370,7 +383,7 @@ UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
 		"float3 UVW = (WorldPos - VolumeOrigin.xyz) / max(VolumeSize.xyz, 1.0f);\n"
 		"\n"
 		"// Decode velocity (assuming texture stores [0..1] mapped to [-Max, +Max])\n"
-		"float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * 2000.0f;\n"
+		"float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * MaxWindSpeed;\n"
 		"float Speed = length(Velocity);\n"
 		"float NormSpeed = saturate(Speed / 400.0f);\n"
 		"\n"
@@ -413,6 +426,12 @@ UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
 		FCustomInput In;
 		In.InputName = TEXT("Texel");
 		In.Input.Connect(0, VolTexSample);
+		DebugNode->Inputs.Add(In);
+	}
+	{
+		FCustomInput In;
+		In.InputName = TEXT("MaxWindSpeed");
+		In.Input.Connect(0, MaxSpeedParam);
 		DebugNode->Inputs.Add(In);
 	}
 
@@ -534,6 +553,8 @@ UMaterialInstanceDynamic* UWindMaterialBuilder::ApplyWindToComponent(
 		return nullptr;
 	}
 
+	if (MaterialIndex >= Component->GetNumMaterials()) return nullptr;
+
 	// Create MID
 	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(WindMaterial, Component);
 	if (!MID)
@@ -560,10 +581,4 @@ UMaterialInstanceDynamic* UWindMaterialBuilder::ApplyWindToComponent(
 	}
 
 	return MID;
-}
-
-void UWindMaterialBuilder::RegisterConsoleCommands()
-{
-	// Console command is auto-registered via FAutoConsoleCommand above
-	UE_LOG(LogWindMaterialBuilder, Log, TEXT("Wind3D.CreateMaterial console command available."));
 }
