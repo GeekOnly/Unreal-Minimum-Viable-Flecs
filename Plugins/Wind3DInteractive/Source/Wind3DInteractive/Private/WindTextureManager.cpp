@@ -85,38 +85,50 @@ void FWindTextureManager::Shutdown()
 
 void FWindTextureManager::CreateVolumeTexture()
 {
-	// Try to load persistent volume texture (created by WindMaterialBuilder)
-	// so materials referencing it automatically see updated wind data.
-	// IMPORTANT: only reuse if dimensions match the current grid.
+	// Try to load persistent volume texture (created by WindMaterialBuilder).
+	// Materials reference this SAME UObject, so we MUST reuse it for base
+	// material rendering (HISM foliage has no MID).
 	UVolumeTexture* Loaded = LoadObject<UVolumeTexture>(
 		nullptr, TEXT("/Game/Wind/VT_Wind_Neutral.VT_Wind_Neutral"));
 	if (Loaded)
 	{
-		// Check dimension match — mismatch causes UVW sampling errors
+		// Check dimension match
 		const FTexturePlatformData* PD = Loaded->GetPlatformData();
 		const bool bDimensionsMatch = PD && PD->Mips.Num() > 0
 			&& PD->Mips[0].SizeX == GridSizeX
 			&& PD->Mips[0].SizeY == GridSizeY
 			&& PD->Mips[0].SizeZ == GridSizeZ;
 
-		if (bDimensionsMatch)
+		if (!bDimensionsMatch)
 		{
-			WindVolumeTexture = Loaded;
-			WindVolumeTexture->AddToRoot();
-			WindVolumeTexture->UpdateResource();
-			UE_LOG(LogWind3D, Log, TEXT("Using persistent wind volume texture: VT_Wind_Neutral (%dx%dx%d)"),
-				GridSizeX, GridSizeY, GridSizeZ);
-			return;
+			// Resize the persistent texture IN-PLACE so the material's reference
+			// stays valid. Fill with neutral data — UploadToGPU will overwrite.
+			UE_LOG(LogWind3D, Log,
+				TEXT("Resizing persistent VT_Wind_Neutral to %dx%dx%d (was %dx%dx%d)"),
+				GridSizeX, GridSizeY, GridSizeZ,
+				PD && PD->Mips.Num() > 0 ? PD->Mips[0].SizeX : 0,
+				PD && PD->Mips.Num() > 0 ? PD->Mips[0].SizeY : 0,
+				PD && PD->Mips.Num() > 0 ? PD->Mips[0].SizeZ : 0);
+
+			const int32 TotalVoxels = GridSizeX * GridSizeY * GridSizeZ;
+			TArray<FFloat16Color> NeutralData;
+			NeutralData.SetNumUninitialized(TotalVoxels);
+			const FFloat16Color Neutral(FLinearColor(0.5f, 0.5f, 0.5f, 0.0f));
+			for (auto& P : NeutralData) P = Neutral;
+
+			Loaded->Source.Init(GridSizeX, GridSizeY, GridSizeZ, 1,
+				TSF_RGBA16F, (const uint8*)NeutralData.GetData());
 		}
-		else
-		{
-			UE_LOG(LogWind3D, Warning,
-				TEXT("Persistent VT_Wind_Neutral dimensions don't match grid (%dx%dx%d). Creating transient texture."),
-				GridSizeX, GridSizeY, GridSizeZ);
-		}
+
+		WindVolumeTexture = Loaded;
+		WindVolumeTexture->AddToRoot();
+		WindVolumeTexture->UpdateResource();
+		UE_LOG(LogWind3D, Log, TEXT("Using persistent wind volume texture: VT_Wind_Neutral (%dx%dx%d)"),
+			GridSizeX, GridSizeY, GridSizeZ);
+		return;
 	}
 
-	// Create transient volume texture matching the grid
+	// No persistent texture — create transient fallback
 	WindVolumeTexture = UVolumeTexture::CreateTransient(GridSizeX, GridSizeY, GridSizeZ, PF_FloatRGBA);
 	if (!WindVolumeTexture)
 	{
@@ -316,10 +328,25 @@ void FWindTextureManager::EncodeGridToStagingBuffer(const IWindSolver& Grid)
 
 void FWindTextureManager::UploadToGPU()
 {
-	if (!WindVolumeTexture) return;
+	if (!WindVolumeTexture)
+	{
+		UE_LOG(LogWind3D, Warning, TEXT("UploadToGPU: WindVolumeTexture is null!"));
+		return;
+	}
 
 	FTextureResource* Resource = WindVolumeTexture->GetResource();
-	if (!Resource) return;
+	if (!Resource)
+	{
+		static int32 NoResourceWarnCount = 0;
+		if (NoResourceWarnCount++ < 10)
+		{
+			UE_LOG(LogWind3D, Warning, TEXT("UploadToGPU: No texture resource (frame %d). Texture=%s, IsPersistent=%d"),
+				NoResourceWarnCount,
+				*WindVolumeTexture->GetName(),
+				!WindVolumeTexture->HasAnyFlags(RF_Transient));
+		}
+		return;
+	}
 
 	// BulkData is freed after the initial UpdateResource() call, so we must update
 	// the live GPU resource directly via the render thread.
@@ -332,7 +359,11 @@ void FWindTextureManager::UploadToGPU()
 		[Resource, DataCopy = MoveTemp(DataCopy), SX, SY, SZ]
 		(FRHICommandListImmediate& RHICmdList)
 		{
-			if (!Resource->TextureRHI) return;
+			if (!Resource->TextureRHI)
+			{
+				UE_LOG(LogWind3D, Warning, TEXT("UploadToGPU [RT]: TextureRHI is null — GPU resource not ready"));
+				return;
+			}
 
 			const FUpdateTextureRegion3D Region(0, 0, 0, 0, 0, 0, SX, SY, SZ);
 			RHICmdList.UpdateTexture3D(
@@ -354,7 +385,9 @@ void FWindTextureManager::UploadToGPU()
 		if (StagingBuffer.IsValidIndex(CenterIdx))
 		{
 			const FFloat16Color& C = StagingBuffer[CenterIdx];
-			UE_LOG(LogWind3D, Log, TEXT("UploadToGPU: Center=(%.3f, %.3f, %.3f, %.3f)"),
+			UE_LOG(LogWind3D, Log, TEXT("UploadToGPU: Grid=%dx%dx%d, Tex=%s, Center=(%.3f, %.3f, %.3f, %.3f)"),
+				SX, SY, SZ,
+				*WindVolumeTexture->GetName(),
 				C.R.GetFloat(), C.G.GetFloat(), C.B.GetFloat(), C.A.GetFloat());
 		}
 	}

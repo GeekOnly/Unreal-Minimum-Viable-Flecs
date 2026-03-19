@@ -297,41 +297,76 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 	WindWPO->Description = TEXT("WindDisplacement");
 	WindWPO->OutputType = CMOT_Float3;
 	WindWPO->Code = TEXT(
-		"// Flexibility gradient: UV.Y (0=root, 1=tip)\n"
-		"// VertexColor.R defaults to 1.0 (white) when unpainted — no gradient!\n"
-		"// UV.Y is reliable for all grass meshes.\n"
-		"float Flexibility = TexCoordY;\n"
+		"// ============================================================\n"
+		"// Wind Grass WPO — GoW / Ghost of Tsushima style\n"
+		"// ============================================================\n"
 		"\n"
-		"// Ambient sway — always present, gives life even without wind data\n"
-		"float Phase = dot(WorldPos, float3(0.1, 0.07, 0.13));\n"
-		"float SwayX = sin(Time * 2.5 + Phase) * 15.0 * Flexibility;\n"
-		"float SwayY = sin(Time * 3.1 + Phase * 1.3) * 10.0 * Flexibility;\n"
-		"float3 Result = float3(SwayX, SwayY, 0);\n"
+		"// Flexibility: UV.Y gradient (0=root, 1=tip)\n"
+		"float FlexGrad = 1.0 - TexCoordY; // Most grass: UV.Y=1 at root, 0 at tip\n"
+		"float FlexGrad2 = FlexGrad * FlexGrad; // Quadratic — roots stay firmly planted\n"
 		"\n"
-		"// Compute UVW for volume texture lookup\n"
+		"// --- Per-blade hash for unique variation ---\n"
+		"// Quantize world pos so all vertices of one blade share the same hash\n"
+		"float3 BladeID = floor(WorldPos / 25.0);\n"
+		"float Hash = frac(sin(dot(BladeID.xy, float2(127.1, 311.7))) * 43758.5453);\n"
+		"float Hash2 = frac(sin(dot(BladeID.xy, float2(269.5, 183.3))) * 76123.8731);\n"
+		"\n"
+		"// --- Layer 1: Primary sway (slow traveling wave) ---\n"
+		"float WavePhase1 = Time * 1.2 + WorldPos.x * 0.005 + WorldPos.y * 0.003;\n"
+		"float Sway1 = sin(WavePhase1 + Hash * 6.28) * 20.0;\n"
+		"float Sway1Y = sin(WavePhase1 * 0.7 + Hash2 * 6.28 + 1.57) * 12.0;\n"
+		"\n"
+		"// --- Layer 2: Secondary ripple (faster, smaller) ---\n"
+		"float WavePhase2 = Time * 2.8 + WorldPos.x * 0.012 + WorldPos.y * 0.009;\n"
+		"float Sway2 = sin(WavePhase2 + Hash * 3.14) * 8.0;\n"
+		"float Sway2Y = cos(WavePhase2 * 1.1 + Hash2 * 3.14) * 5.0;\n"
+		"\n"
+		"// --- Layer 3: Micro-shiver (high freq, very small) ---\n"
+		"float ShiverPhase = Time * 7.5 + Hash * 100.0;\n"
+		"float Shiver = sin(ShiverPhase) * 2.5;\n"
+		"float ShiverY = cos(ShiverPhase * 1.3 + 0.7) * 1.5;\n"
+		"\n"
+		"// --- Layer 4: Gust wave (periodic sweep across field) ---\n"
+		"float GustWave = sin(Time * 0.4 + WorldPos.x * 0.002 - WorldPos.y * 0.001);\n"
+		"float GustStrength = saturate(GustWave * 2.0 - 0.5); // Sharp onset, soft falloff\n"
+		"float GustPush = GustStrength * 35.0;\n"
+		"\n"
+		"// Combine ambient layers\n"
+		"float IdleX = (Sway1 + Sway2 + Shiver + GustPush) * FlexGrad2;\n"
+		"float IdleY = (Sway1Y + Sway2Y + ShiverY + GustPush * 0.3) * FlexGrad2;\n"
+		"float IdleZ = sin(Time * 1.8 + Hash * 6.28) * 3.0 * FlexGrad2; // Subtle vertical bob\n"
+		"float3 Result = float3(IdleX, IdleY, IdleZ);\n"
+		"\n"
+		"// ============================================================\n"
+		"// Wind motor displacement (from 3D volume texture)\n"
+		"// ============================================================\n"
 		"float3 UVW = (WorldPos - VolumeOrigin.xyz) / max(VolumeSize.xyz, 0.001f);\n"
 		"\n"
-		"// Only add wind-driven displacement if inside volume\n"
 		"if (!(any(UVW < -0.05f) || any(UVW > 1.05f)))\n"
 		"{\n"
-		"    // Edge fade\n"
 		"    float3 Edge = min(saturate(UVW), 1.0f - saturate(UVW));\n"
 		"    float Fade = saturate(min(min(Edge.x, Edge.y), Edge.z) * 10.0f);\n"
 		"\n"
-		"    // Decode velocity from texture: [0,1] -> [-MaxSpeed, +MaxSpeed]\n"
 		"    float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * MaxWindSpeed * Fade;\n"
 		"    float Turbulence = Texel.a * Fade;\n"
 		"    float Speed = length(Velocity);\n"
 		"\n"
-		"    if (Speed > 1.0f)\n"
+		"    if (Speed > 5.0f)\n"
 		"    {\n"
 		"        float3 Dir = normalize(Velocity);\n"
-		"        float BendAmount = min(Speed, 1000.0f) * 0.5f * Flexibility;\n"
+		"\n"
+		"        // Smooth bend — quadratic falloff from root to tip\n"
+		"        float BendAmount = min(Speed, 800.0f) * 0.4f * FlexGrad2;\n"
 		"        Result += Dir * BendAmount;\n"
 		"\n"
-		"        // Shiver (micro-animation)\n"
-		"        float Shiver = sin(Time * 10.0f + Phase) * Turbulence * 0.2f * Speed * Flexibility;\n"
-		"        Result += Dir * Shiver;\n"
+		"        // Wind-driven shiver — scales with speed\n"
+		"        float WindShiver = sin(Time * 12.0 + Hash * 100.0) * Speed * 0.015 * FlexGrad;\n"
+		"        Result += Dir * WindShiver;\n"
+		"\n"
+		"        // Cross-wind flutter — perpendicular micro-motion\n"
+		"        float3 CrossDir = normalize(cross(Dir, float3(0, 0, 1)));\n"
+		"        float Flutter = sin(Time * 9.0 + Hash2 * 50.0) * Speed * 0.008 * FlexGrad;\n"
+		"        Result += CrossDir * Flutter;\n"
 		"    }\n"
 		"}\n"
 		"\n"
@@ -407,10 +442,46 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 	// World Position Offset <- WindWPO
 	Mat->GetEditorOnlyData()->WorldPositionOffset.Connect(0, WindWPO);
 
-	// Base Color <- simple green constant
-	auto* BaseColor = AddExpression<UMaterialExpressionConstant3Vector>(Mat, -200, 0);
-	BaseColor->Constant = FLinearColor(0.15f, 0.45f, 0.05f);
-	Mat->GetEditorOnlyData()->BaseColor.Connect(0, BaseColor);
+	// Base Color <- Debug: shows wind data in color
+	// Green = no wind, Yellow/Red = wind speed, Blue = outside volume
+	auto* DebugBaseColor = AddExpression<UMaterialExpressionCustom>(Mat, -200, 0);
+	DebugBaseColor->Description = TEXT("WindDebugColor");
+	DebugBaseColor->OutputType = CMOT_Float3;
+	DebugBaseColor->Code = TEXT(
+		"float3 UVW = (WorldPos - VolumeOrigin.xyz) / max(VolumeSize.xyz, 0.001f);\n"
+		"bool bInside = !(any(UVW < -0.05f) || any(UVW > 1.05f));\n"
+		"if (!bInside) return float3(0.1, 0.1, 0.4); // Blue = outside volume\n"
+		"float3 Vel = (Texel.rgb * 2.0f - 1.0f) * MaxWindSpeed;\n"
+		"float Speed = length(Vel);\n"
+		"float N = saturate(Speed / 500.0f);\n"
+		"// Green(0) -> Yellow(0.5) -> Red(1.0)\n"
+		"return lerp(float3(0.1, 0.5, 0.05), float3(1, 0.2, 0), N);"
+	);
+	DebugBaseColor->Inputs.Empty();
+	{
+		FCustomInput In; In.InputName = TEXT("WorldPos");
+		In.Input.Connect(0, WorldPos); DebugBaseColor->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("VolumeOrigin");
+		In.Input.Connect(0, OriginParam); DebugBaseColor->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("VolumeSize");
+		In.Input.Connect(0, SizeParam); DebugBaseColor->Inputs.Add(In);
+	}
+	{
+		auto* AppendAlpha2 = AddExpression<UMaterialExpressionAppendVector>(Mat, -500, 0);
+		AppendAlpha2->A.Connect(0, VolTexSample);
+		AppendAlpha2->B.Connect(4, VolTexSample);
+		FCustomInput In; In.InputName = TEXT("Texel");
+		In.Input.Connect(0, AppendAlpha2); DebugBaseColor->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("MaxWindSpeed");
+		In.Input.Connect(0, MaxSpeedParam); DebugBaseColor->Inputs.Add(In);
+	}
+	Mat->GetEditorOnlyData()->BaseColor.Connect(0, DebugBaseColor);
 
 	// ---- 4. Compile, Save & Register ----
 	Mat->PreEditChange(nullptr);
