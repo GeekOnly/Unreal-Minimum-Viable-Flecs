@@ -11,8 +11,11 @@
 #include "Materials/MaterialExpressionTime.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionComponentMask.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionAppendVector.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialParameterCollection.h"
 
 #include "Engine/VolumeTexture.h"
 #include "Components/PrimitiveComponent.h"
@@ -74,6 +77,99 @@ static FAutoConsoleCommand GWindCreateDebugMaterialCmd(
 );
 
 // ---------------------------------------------------------------------------
+// Helper: create or load persistent MPC asset for wind parameters
+// ---------------------------------------------------------------------------
+static UMaterialParameterCollection* CreateOrLoadWindMPC()
+{
+	const FString MPCPath = TEXT("/Game/Wind/MPC_Wind3D");
+	const FString AssetPath = MPCPath + TEXT(".MPC_Wind3D");
+
+	// Try to load existing
+	UMaterialParameterCollection* MPC = LoadObject<UMaterialParameterCollection>(nullptr, *AssetPath);
+	if (MPC) return MPC;
+
+	// Create new
+	UPackage* Pkg = CreatePackage(*MPCPath);
+	if (!Pkg) return nullptr;
+
+	MPC = NewObject<UMaterialParameterCollection>(Pkg, TEXT("MPC_Wind3D"), RF_Public | RF_Standalone);
+	if (!MPC) return nullptr;
+
+	// Vector parameters (must match WindTextureManager::UpdateMPCParams)
+	{
+		FCollectionVectorParameter P;
+		P.ParameterName = FName(TEXT("WindVolumeOrigin"));
+		P.DefaultValue = FLinearColor(0, 0, 0, 0);
+		MPC->VectorParameters.Add(P);
+	}
+	{
+		FCollectionVectorParameter P;
+		P.ParameterName = FName(TEXT("WindVolumeSize"));
+		P.DefaultValue = FLinearColor(6400, 6400, 3200, 0);
+		MPC->VectorParameters.Add(P);
+	}
+	{
+		FCollectionVectorParameter P;
+		P.ParameterName = FName(TEXT("WindAmbient"));
+		P.DefaultValue = FLinearColor(0, 0, 0, 0);
+		MPC->VectorParameters.Add(P);
+	}
+
+	// Scalar parameters
+	{
+		FCollectionScalarParameter P;
+		P.ParameterName = FName(TEXT("WindOverallPower"));
+		P.DefaultValue = 1.0f;
+		MPC->ScalarParameters.Add(P);
+	}
+	{
+		FCollectionScalarParameter P;
+		P.ParameterName = FName(TEXT("WindMaxSpeed"));
+		P.DefaultValue = 2000.f;
+		MPC->ScalarParameters.Add(P);
+	}
+
+	// Save
+	Pkg->MarkPackageDirty();
+	const FString Filename = FPackageName::LongPackageNameToFilename(MPCPath, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Pkg, MPC, *Filename, SaveArgs);
+	FAssetRegistryModule::AssetCreated(MPC);
+
+	UE_LOG(LogWindMaterialBuilder, Log, TEXT("Created persistent wind MPC: %s"), *MPCPath);
+	return MPC;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: create a CollectionParameter expression with correct ParameterId
+// ---------------------------------------------------------------------------
+static UMaterialExpressionCollectionParameter* AddMPCParam(
+	UMaterial* Mat, UMaterialParameterCollection* MPC, FName ParamName, int32 PosX, int32 PosY)
+{
+	auto* Expr = NewObject<UMaterialExpressionCollectionParameter>(Mat);
+	Expr->MaterialExpressionEditorX = PosX;
+	Expr->MaterialExpressionEditorY = PosY;
+	Mat->GetEditorOnlyData()->ExpressionCollection.AddExpression(Expr);
+
+	Expr->Collection = MPC;
+	Expr->ParameterName = ParamName;
+
+	// Match ParameterId from the MPC's parameter list
+	for (const FCollectionVectorParameter& P : MPC->VectorParameters)
+	{
+		if (P.ParameterName == ParamName) { Expr->ParameterId = P.Id; return Expr; }
+	}
+	for (const FCollectionScalarParameter& P : MPC->ScalarParameters)
+	{
+		if (P.ParameterName == ParamName) { Expr->ParameterId = P.Id; return Expr; }
+	}
+
+	UE_LOG(LogWindMaterialBuilder, Warning, TEXT("MPC parameter '%s' not found — material may not compile"), *ParamName.ToString());
+	return Expr;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: create a material expression and add it to the material
 // ---------------------------------------------------------------------------
 template<typename T>
@@ -115,29 +211,34 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 
 	// ---- 2. Create Expression Nodes ----
 
+	// -- Create/Load persistent MPC --
+	UMaterialParameterCollection* WindMPC = CreateOrLoadWindMPC();
+	if (!WindMPC)
+	{
+		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create/load wind MPC"));
+		return nullptr;
+	}
+
 	// -- WorldPosition --
 	auto* WorldPos = AddExpression<UMaterialExpressionWorldPosition>(Mat, -1600, 100);
 
-	// -- VolumeOrigin (VectorParameter) --
-	auto* OriginParam = AddExpression<UMaterialExpressionVectorParameter>(Mat, -1600, 300);
-	OriginParam->ParameterName = TEXT("VolumeOrigin");
-	OriginParam->DefaultValue = FLinearColor(0, 0, 0, 0);
+	// -- VolumeOrigin (from MPC — auto-updated every frame) --
+	auto* OriginParam = AddMPCParam(Mat, WindMPC, FName(TEXT("WindVolumeOrigin")), -1600, 300);
 
-	// -- VolumeSize (VectorParameter) --
-	auto* SizeParam = AddExpression<UMaterialExpressionVectorParameter>(Mat, -1600, 500);
-	SizeParam->ParameterName = TEXT("VolumeSize");
-	SizeParam->DefaultValue = FLinearColor(6400, 6400, 3200, 0);
+	// -- VolumeSize (from MPC) --
+	auto* SizeParam = AddMPCParam(Mat, WindMPC, FName(TEXT("WindVolumeSize")), -1600, 500);
 
 	// -- Time --
 	auto* TimeNode = AddExpression<UMaterialExpressionTime>(Mat, -1600, 700);
 
-	// -- MaxWindSpeed (ScalarParameter) --
-	auto* MaxSpeedParam = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1600, 800);
-	MaxSpeedParam->ParameterName = TEXT("MaxWindSpeed");
-	MaxSpeedParam->DefaultValue = 2000.f;
+	// -- MaxWindSpeed (from MPC) --
+	auto* MaxSpeedParam = AddMPCParam(Mat, WindMPC, FName(TEXT("WindMaxSpeed")), -1600, 800);
 
 	// -- VertexColor --
 	auto* VertColor = AddExpression<UMaterialExpressionVertexColor>(Mat, -1600, 900);
+
+	// -- TextureCoordinate (UV.Y fallback for flexibility when no vertex color) --
+	auto* TexCoordNode = AddExpression<UMaterialExpressionTextureCoordinate>(Mat, -1600, 1000);
 
 	// -- Custom Node: Compute UVW --
 	auto* UVWNode = AddExpression<UMaterialExpressionCustom>(Mat, -1100, 400);
@@ -196,37 +297,45 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 	WindWPO->Description = TEXT("WindDisplacement");
 	WindWPO->OutputType = CMOT_Float3;
 	WindWPO->Code = TEXT(
-		"// Compute UVW for bounds check\n"
+		"// Flexibility gradient: UV.Y (0=root, 1=tip)\n"
+		"// VertexColor.R defaults to 1.0 (white) when unpainted — no gradient!\n"
+		"// UV.Y is reliable for all grass meshes.\n"
+		"float Flexibility = TexCoordY;\n"
+		"\n"
+		"// Ambient sway — always present, gives life even without wind data\n"
+		"float Phase = dot(WorldPos, float3(0.1, 0.07, 0.13));\n"
+		"float SwayX = sin(Time * 2.5 + Phase) * 15.0 * Flexibility;\n"
+		"float SwayY = sin(Time * 3.1 + Phase * 1.3) * 10.0 * Flexibility;\n"
+		"float3 Result = float3(SwayX, SwayY, 0);\n"
+		"\n"
+		"// Compute UVW for volume texture lookup\n"
 		"float3 UVW = (WorldPos - VolumeOrigin.xyz) / max(VolumeSize.xyz, 0.001f);\n"
 		"\n"
-		"// Out of bounds check\n"
-		"if (any(UVW < -0.05f) || any(UVW > 1.05f))\n"
-		"    return float3(0, 0, 0);\n"
+		"// Only add wind-driven displacement if inside volume\n"
+		"if (!(any(UVW < -0.05f) || any(UVW > 1.05f)))\n"
+		"{\n"
+		"    // Edge fade\n"
+		"    float3 Edge = min(saturate(UVW), 1.0f - saturate(UVW));\n"
+		"    float Fade = saturate(min(min(Edge.x, Edge.y), Edge.z) * 10.0f);\n"
 		"\n"
-		"// Edge fade\n"
-		"float3 Edge = min(saturate(UVW), 1.0f - saturate(UVW));\n"
-		"float Fade = saturate(min(min(Edge.x, Edge.y), Edge.z) * 10.0f);\n"
+		"    // Decode velocity from texture: [0,1] -> [-MaxSpeed, +MaxSpeed]\n"
+		"    float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * MaxWindSpeed * Fade;\n"
+		"    float Turbulence = Texel.a * Fade;\n"
+		"    float Speed = length(Velocity);\n"
 		"\n"
-		"// Decode velocity from texture: [0,1] -> [-MaxSpeed, +MaxSpeed]\n"
-		"float3 Velocity = (Texel.rgb * 2.0f - 1.0f) * MaxWindSpeed * Fade;\n"
-		"float Turbulence = Texel.a * Fade;\n"
-		"float Speed = length(Velocity);\n"
+		"    if (Speed > 1.0f)\n"
+		"    {\n"
+		"        float3 Dir = normalize(Velocity);\n"
+		"        float BendAmount = min(Speed, 1000.0f) * 0.5f * Flexibility;\n"
+		"        Result += Dir * BendAmount;\n"
 		"\n"
-		"if (Speed < 1.0f) return float3(0, 0, 0);\n"
+		"        // Shiver (micro-animation)\n"
+		"        float Shiver = sin(Time * 10.0f + Phase) * Turbulence * 0.2f * Speed * Flexibility;\n"
+		"        Result += Dir * Shiver;\n"
+		"    }\n"
+		"}\n"
 		"\n"
-		"// Flexibility: VertexColor R channel (0=root, 1=tip)\n"
-		"float Flexibility = Flex;\n"
-		"\n"
-		"// Main bend\n"
-		"float3 Dir = normalize(Velocity);\n"
-		"float BendAmount = min(Speed, 1000.0f) * 0.5f * Flexibility;\n"
-		"float3 MainBend = Dir * BendAmount;\n"
-		"\n"
-		"// Shiver (micro-animation)\n"
-		"float Phase = dot(WorldPos, float3(0.1, 0.1, 0.1));\n"
-		"float Shiver = sin(Time * 10.0f + Phase) * Turbulence * 0.2f * Speed * Flexibility;\n"
-		"\n"
-		"return MainBend + Dir * Shiver;"
+		"return Result;"
 	);
 
 	// Inputs for WindWPO
@@ -273,6 +382,17 @@ UMaterial* UWindMaterialBuilder::CreateWindMaterial(const FString& SavePath)
 		FCustomInput In;
 		In.InputName = TEXT("Flex");
 		In.Input.Connect(1, VertColor); // Output index 1 = R channel
+		WindWPO->Inputs.Add(In);
+	}
+	{
+		// UV.Y as fallback flexibility (V=0 at root, V=1 at tip)
+		auto* MaskV = AddExpression<UMaterialExpressionComponentMask>(Mat, -1400, 1000);
+		MaskV->R = 0; MaskV->G = 1; MaskV->B = 0; MaskV->A = 0;
+		MaskV->Input.Connect(0, TexCoordNode);
+
+		FCustomInput In;
+		In.InputName = TEXT("TexCoordY");
+		In.Input.Connect(0, MaskV);
 		WindWPO->Inputs.Add(In);
 	}
 	{
@@ -345,23 +465,25 @@ UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
 
 	// ---- 2. Create Expression Nodes ----
 
+	// -- Create/Load persistent MPC --
+	UMaterialParameterCollection* WindMPC = CreateOrLoadWindMPC();
+	if (!WindMPC)
+	{
+		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create/load wind MPC for debug material"));
+		return nullptr;
+	}
+
 	// -- WorldPosition --
 	auto* WorldPos = AddExpression<UMaterialExpressionWorldPosition>(Mat, -1200, 100);
 
-	// -- VolumeOrigin --
-	auto* OriginParam = AddExpression<UMaterialExpressionVectorParameter>(Mat, -1200, 300);
-	OriginParam->ParameterName = TEXT("VolumeOrigin");
-	OriginParam->DefaultValue = FLinearColor(0, 0, 0, 0);
+	// -- VolumeOrigin (from MPC) --
+	auto* OriginParam = AddMPCParam(Mat, WindMPC, FName(TEXT("WindVolumeOrigin")), -1200, 300);
 
-	// -- VolumeSize --
-	auto* SizeParam = AddExpression<UMaterialExpressionVectorParameter>(Mat, -1200, 500);
-	SizeParam->ParameterName = TEXT("VolumeSize");
-	SizeParam->DefaultValue = FLinearColor(6400, 6400, 3200, 0);
+	// -- VolumeSize (from MPC) --
+	auto* SizeParam = AddMPCParam(Mat, WindMPC, FName(TEXT("WindVolumeSize")), -1200, 500);
 
-	// -- MaxWindSpeed (ScalarParameter) --
-	auto* MaxSpeedParam = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1200, 600);
-	MaxSpeedParam->ParameterName = TEXT("MaxWindSpeed");
-	MaxSpeedParam->DefaultValue = 2000.f;
+	// -- MaxWindSpeed (from MPC) --
+	auto* MaxSpeedParam = AddMPCParam(Mat, WindMPC, FName(TEXT("WindMaxSpeed")), -1200, 600);
 
 	// -- TextureSampleParameterVolume: WindVolume --
 	auto* VolTexSample = AddExpression<UMaterialExpressionTextureSampleParameterVolume>(Mat, -800, 300);

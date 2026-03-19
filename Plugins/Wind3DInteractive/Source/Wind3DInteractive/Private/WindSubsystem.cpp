@@ -129,7 +129,7 @@ void UWindSubsystem::RegisterSystems()
 			for (auto I : It)
 			{
 				if (GridComp[I].SolverPtr)
-					Plugin 'AAACharacterCombat' failed to load because module 'AAACharacterCombat' could not be loaded.There may be an operating system error or the module may not be properly set up.				{
+				{
 					GridComp[I].SolverPtr->Advect(AdvectionForce, DT, bForwardAdvection);
 				}
 			}

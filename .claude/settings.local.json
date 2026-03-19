@@ -6,7 +6,9 @@
       "Bash(/tmp/dump_region4.py:*)",
       "Bash(/tmp/verify.py:*)",
       "Bash(/tmp/verify2.py:*)",
-      "Bash(rtk \"J:/GAMES/UE_5.7/Engine/Build/BatchFiles/Build.bat\" Development Win64 -Project=\"J:/Project_2026/February/Unreal/Unreal-Minimum-Viable-Flecs/FlecsTest.uproject\" -TargetType=Editor -Progress -NoEngineChanges -NoHotReloadFromIDE)"
+      "Bash(rtk \"J:/GAMES/UE_5.7/Engine/Build/BatchFiles/Build.bat\" Development Win64 -Project=\"J:/Project_2026/February/Unreal/Unreal-Minimum-Viable-Flecs/FlecsTest.uproject\" -TargetType=Editor -Progress -NoEngineChanges -NoHotReloadFromIDE)",
+      "Bash(rtk \"J:/GAMES/UE_5.7/Engine/Build/BatchFiles/Build.bat\" Development Win64 -Project=\"J:/Project_2026/February/Unreal/Unreal-Minimum-Viable-Flecs/FlecsTest.uproject\" -TargetType=Editor -Progress -NoEngineChanges -NoHotReloadFromIDE -MaxParallelActions=2)",
+      "Bash(rtk \"C:/Program Files/Epic Games/UE_5.7/Engine/Build/BatchFiles/Build.bat\" UnrealMinimumViableFlecs Win64 Development -Project=\"J:/Project_2026/February/Unreal/Unreal-Minimum-Viable-Flecs/UnrealMinimumViableFlecs.uproject\" -WaitMutex -FromMsBuild -MaxParallelActions=2)"
     ]
   }
 }

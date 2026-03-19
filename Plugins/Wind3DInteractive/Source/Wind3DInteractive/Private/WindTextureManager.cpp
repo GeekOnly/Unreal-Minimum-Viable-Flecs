@@ -85,6 +85,38 @@ void FWindTextureManager::Shutdown()
 
 void FWindTextureManager::CreateVolumeTexture()
 {
+	// Try to load persistent volume texture (created by WindMaterialBuilder)
+	// so materials referencing it automatically see updated wind data.
+	// IMPORTANT: only reuse if dimensions match the current grid.
+	UVolumeTexture* Loaded = LoadObject<UVolumeTexture>(
+		nullptr, TEXT("/Game/Wind/VT_Wind_Neutral.VT_Wind_Neutral"));
+	if (Loaded)
+	{
+		// Check dimension match — mismatch causes UVW sampling errors
+		const FTexturePlatformData* PD = Loaded->GetPlatformData();
+		const bool bDimensionsMatch = PD && PD->Mips.Num() > 0
+			&& PD->Mips[0].SizeX == GridSizeX
+			&& PD->Mips[0].SizeY == GridSizeY
+			&& PD->Mips[0].SizeZ == GridSizeZ;
+
+		if (bDimensionsMatch)
+		{
+			WindVolumeTexture = Loaded;
+			WindVolumeTexture->AddToRoot();
+			WindVolumeTexture->UpdateResource();
+			UE_LOG(LogWind3D, Log, TEXT("Using persistent wind volume texture: VT_Wind_Neutral (%dx%dx%d)"),
+				GridSizeX, GridSizeY, GridSizeZ);
+			return;
+		}
+		else
+		{
+			UE_LOG(LogWind3D, Warning,
+				TEXT("Persistent VT_Wind_Neutral dimensions don't match grid (%dx%dx%d). Creating transient texture."),
+				GridSizeX, GridSizeY, GridSizeZ);
+		}
+	}
+
+	// Create transient volume texture matching the grid
 	WindVolumeTexture = UVolumeTexture::CreateTransient(GridSizeX, GridSizeY, GridSizeZ, PF_FloatRGBA);
 	if (!WindVolumeTexture)
 	{
@@ -98,20 +130,19 @@ void FWindTextureManager::CreateVolumeTexture()
 	WindVolumeTexture->CompressionSettings = TC_HDR;
 	WindVolumeTexture->MipGenSettings = TMGS_NoMipmaps;
 
-	// Initialize mip data with zeros
+	// Initialize mip data with neutral wind
 	FTexturePlatformData* PlatformData = WindVolumeTexture->GetPlatformData();
 	if (PlatformData && PlatformData->Mips.Num() > 0)
 	{
 		FTexture2DMipMap& Mip = PlatformData->Mips[0];
 		void* TextureData = Mip.BulkData.Lock(LOCK_READ_WRITE);
-		
+
 		if (TextureData)
 		{
-			// Initialize mip data with neutral wind (0.5, 0.5, 0.5, 0.0) -> Velocity (0, 0, 0)
 			FFloat16Color* DataPtr = (FFloat16Color*)TextureData;
 			const int32 NumVoxels = GridSizeX * GridSizeY * GridSizeZ;
 			const FFloat16Color NeutralColor(FLinearColor(0.5f, 0.5f, 0.5f, 0.0f));
-			
+
 			for (int32 i = 0; i < NumVoxels; ++i)
 			{
 				DataPtr[i] = NeutralColor;
@@ -121,10 +152,24 @@ void FWindTextureManager::CreateVolumeTexture()
 	}
 
 	WindVolumeTexture->UpdateResource();
+	UE_LOG(LogWind3D, Log, TEXT("Created transient wind volume texture: %dx%dx%d"),
+		GridSizeX, GridSizeY, GridSizeZ);
 }
 
 void FWindTextureManager::CreateMPC()
 {
+	// Try to load persistent MPC (created by WindMaterialBuilder::CreateWindMaterial)
+	// so materials referencing it via CollectionParameter automatically receive updates
+	WindMPC = LoadObject<UMaterialParameterCollection>(
+		nullptr, TEXT("/Game/Wind/MPC_Wind3D.MPC_Wind3D"));
+	if (WindMPC)
+	{
+		WindMPC->AddToRoot();
+		UE_LOG(LogWind3D, Log, TEXT("Loaded persistent wind MPC: /Game/Wind/MPC_Wind3D"));
+		return;
+	}
+
+	// Fallback: create transient MPC (works for MID-based materials)
 	WindMPC = NewObject<UMaterialParameterCollection>(
 		GetTransientPackage(),
 		FName(TEXT("Wind3D_MPC")),
@@ -148,7 +193,7 @@ void FWindTextureManager::CreateMPC()
 	};
 
 	AddVectorParam(FName(TEXT("WindVolumeOrigin")), FLinearColor(0, 0, 0, 0));
-	AddVectorParam(FName(TEXT("WindVolumeSize")), FLinearColor(0, 0, 0, 0)); // Updated in Tick
+	AddVectorParam(FName(TEXT("WindVolumeSize")), FLinearColor(0, 0, 0, 0));
 	AddVectorParam(FName(TEXT("WindAmbient")), FLinearColor(0, 0, 0, 0));
 
 	// Scalar parameters
