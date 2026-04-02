@@ -204,6 +204,36 @@ void AWindFieldSetupActor::ApplyFoliagePresetToDefaults()
         FoliageDampingCoefficient);
 }
 
+void AWindFieldSetupActor::TriggerFoliageInteractionImpulse()
+{
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return;
+    }
+
+    UWindSubsystem* WindSys = World->GetSubsystem<UWindSubsystem>();
+    if (!WindSys)
+    {
+        UE_LOG(LogWind3D, Warning, TEXT("TriggerFoliageInteractionImpulse: WindSubsystem not found."));
+        return;
+    }
+
+    const int32 Affected = WindSys->ApplyFoliageInteractionImpulse(
+        GetActorLocation(),
+        InteractionImpulseRadius,
+        InteractionImpulseStrength,
+        InteractionImpulseTurbulenceBoost,
+        true);
+
+    UE_LOG(LogWind3D, Log,
+        TEXT("TriggerFoliageInteractionImpulse: Affected=%d Radius=%.0f Strength=%.2f Turb=%.2f"),
+        Affected,
+        InteractionImpulseRadius,
+        InteractionImpulseStrength,
+        InteractionImpulseTurbulenceBoost);
+}
+
 bool AWindFieldSetupActor::ShouldRegisterFoliageComponent(const UHierarchicalInstancedStaticMeshComponent* HISM) const
 {
     if (!HISM) return false;

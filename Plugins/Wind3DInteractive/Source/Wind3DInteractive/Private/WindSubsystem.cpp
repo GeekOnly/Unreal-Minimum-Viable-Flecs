@@ -1112,6 +1112,75 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 	return FWindEntityHandle(E.id());
 }
 
+int32 UWindSubsystem::ApplyFoliageInteractionImpulse(
+	FVector Origin,
+	float Radius,
+	float Strength,
+	float TurbulenceBoost,
+	bool bAffectFilteredWind)
+{
+	if (!ECSWorld || Radius <= KINDA_SMALL_NUMBER || Strength <= KINDA_SMALL_NUMBER)
+	{
+		return 0;
+	}
+
+	const float RadiusSq = Radius * Radius;
+	const float SafeStrength = FMath::Max(Strength, 0.f);
+	const float SafeTurbulenceBoost = FMath::Clamp(TurbulenceBoost, 0.f, 1.f);
+	const float EffectiveMaxSpeed = FMath::Min(FWindTextureManager::MaxWindSpeed, 1000.f);
+
+	int32 AffectedCount = 0;
+	ECSWorld->each(
+		[Origin, Radius, RadiusSq, SafeStrength, SafeTurbulenceBoost, EffectiveMaxSpeed, bAffectFilteredWind, &AffectedCount]
+		(FWindReceiver& Recv, const FFoliageWorldPosition& Pos, FWindVelocityAtEntity& WindAt)
+		{
+			const float DistSq = FVector::DistSquared(Pos.Location, Origin);
+			if (DistSq > RadiusSq)
+			{
+				return;
+			}
+
+			const float Dist = FMath::Sqrt(FMath::Max(DistSq, 0.f));
+			const float LinearFalloff = 1.f - FMath::Clamp(Dist / Radius, 0.f, 1.f);
+			const float Falloff = LinearFalloff * LinearFalloff;
+			if (Falloff <= KINDA_SMALL_NUMBER)
+			{
+				return;
+			}
+
+			const float SensitivityScale = FMath::Clamp(Recv.Sensitivity, 0.25f, 3.f);
+			const float ImpulseVelocity = SafeStrength * Falloff * SensitivityScale;
+
+			const float MaxImpulseVel = FMath::Max(Recv.MaxVelocity * 2.f, 0.1f);
+			Recv.DisplacementVelocity = FMath::Clamp(
+				Recv.DisplacementVelocity + ImpulseVelocity,
+				-MaxImpulseVel,
+				MaxImpulseVel);
+
+			const float MaxBend = FMath::Max(Recv.Sensitivity * 3.5f, 0.35f);
+			Recv.DisplacementCurrent = FMath::Clamp(
+				Recv.DisplacementCurrent + ImpulseVelocity * 0.05f,
+				0.f,
+				MaxBend);
+
+			WindAt.Turbulence = FMath::Clamp(
+				FMath::Max(WindAt.Turbulence, SafeTurbulenceBoost * Falloff),
+				0.f,
+				1.f);
+
+			if (bAffectFilteredWind)
+			{
+				const float WindBoostNorm = FMath::Clamp(0.25f + 0.75f * Falloff, 0.f, 1.f);
+				const float TargetWind = EffectiveMaxSpeed * WindBoostNorm;
+				Recv.FilteredWindSpeed = FMath::Max(Recv.FilteredWindSpeed, TargetWind);
+			}
+
+			++AffectedCount;
+		});
+
+	return AffectedCount;
+}
+
 FVector UWindSubsystem::QueryWindAtPosition(FVector WorldPosition) const
 {
 	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())

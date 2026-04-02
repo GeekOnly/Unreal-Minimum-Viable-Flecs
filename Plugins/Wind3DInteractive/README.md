@@ -5,6 +5,7 @@ This README focuses on practical setup for the current Wind3DInteractive plugin 
 - automatic foliage registration
 - foliage presets (Grass, Shrub, Tree)
 - one-click setup actions (preset apply + material auto-create)
+- gameplay interaction impulse for foliage (hit/explosion style)
 - displacement debug overlays (instance and heatmap modes)
 
 ## 1) Requirements
@@ -39,6 +40,9 @@ Use `-NoLiveCoding` when editor live coding is active.
 6. Place one or more `Wind Motor Actor` in the level and tune shape/emission/strength.
 7. Optional one-click material auto-create (Output Log console):
 	- `Wind3D.CreateFoliageSpringMaterial /Game/Wind/M_WindFoliageSpring_Auto`
+8. Optional one-click interaction test (Details panel on setup actor):
+	- tune `InteractionImpulseRadius`, `InteractionImpulseStrength`, `InteractionImpulseTurbulenceBoost`
+	- click `TriggerFoliageInteractionImpulse`
 
 ## 3) Foliage Material Contract
 
@@ -70,7 +74,24 @@ Preset behavior is applied during auto registration.
 - Tree: heavier, slower movement, stronger damping
 - Custom: uses values currently set in `Foliage|Physics Defaults`
 
-## 5) Runtime Debug - Wind Grid
+## 5) Foliage Interaction Impulse (Gameplay Hook)
+
+Use this for non-wind interactions such as weapon impacts, explosions, melee, or scripted events.
+
+Blueprint/C++ API on `UWindSubsystem`:
+
+```text
+ApplyFoliageInteractionImpulse(Origin, Radius, Strength, TurbulenceBoost, bAffectFilteredWind)
+```
+
+Parameters:
+- `Origin`: world position of impact
+- `Radius`: affected range in cm
+- `Strength`: adds bend velocity to nearby foliage springs
+- `TurbulenceBoost`: quick turbulence kick (0..1)
+- `bAffectFilteredWind`: if true, response appears immediately without waiting for wind sample smoothing
+
+## 6) Runtime Debug - Wind Grid
 
 ```text
 Wind3D.ShowDebug 1
@@ -78,7 +99,7 @@ Wind3D.ShowTrailDebug 1
 Wind3D.ShowObstacleNormals 1
 ```
 
-## 6) Runtime Debug - Foliage Displacement
+## 7) Runtime Debug - Foliage Displacement
 
 Enable foliage debug:
 
@@ -137,7 +158,7 @@ Wind3D.FoliageDisplacementDistanceNear 1200
 Wind3D.FoliageDisplacementDistanceFar 8000
 ```
 
-## 7) Recommended Debug Presets
+## 8) Recommended Debug Presets
 
 Close-range tuning:
 
@@ -160,7 +181,7 @@ Wind3D.FoliageDisplacementDistanceFar 12000
 Wind3D.FoliageDisplacementDebugCameraRadius 9000
 ```
 
-## 8) Stability Notes
+## 9) Stability Notes
 
 The plugin now guards custom data writes to avoid HISM array crashes:
 
@@ -170,7 +191,7 @@ The plugin now guards custom data writes to avoid HISM array crashes:
 
 If foliage is rebuilt dynamically while playing, invalid entries are skipped safely.
 
-## 9) Troubleshooting
+## 10) Troubleshooting
 
 If no foliage movement appears:
 

@@ -90,6 +90,25 @@ public:
 		float RestDisplacement = 0.f,
 		float WindFilterAlpha = 0.25f);
 
+	/**
+	 * Apply a radial gameplay impulse to registered foliage spring receivers.
+	 * Useful for weapon hits, explosions, melee impacts, or scripted interactions.
+	 *
+	 * @param Origin World-space center of impulse.
+	 * @param Radius Radius in cm affected by impulse.
+	 * @param Strength Adds positive bend velocity to nearby foliage (spring-space units/sec).
+	 * @param TurbulenceBoost Extra turbulence injected into affected receivers (0..1).
+	 * @param bAffectFilteredWind If true, bumps filtered wind speed to make response feel immediate.
+	 * @return Number of foliage entities affected.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Foliage")
+	int32 ApplyFoliageInteractionImpulse(
+		FVector Origin,
+		float Radius = 350.f,
+		float Strength = 3.0f,
+		float TurbulenceBoost = 0.45f,
+		bool bAffectFilteredWind = true);
+
 	UFUNCTION(BlueprintCallable, Category = "Wind3D")
 	FVector QueryWindAtPosition(FVector WorldPosition) const;
 

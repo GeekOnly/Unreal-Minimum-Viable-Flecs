@@ -215,6 +215,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.01", ClampMax = "1.0", EditCondition = "bAutoRegisterFoliage"))
 	float FoliageWindFilterAlpha = 0.25f;
 
+	// --- Foliage Interaction Test ---
+
+	/** Radius in cm for one-click interaction impulse test. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Interaction Test", meta = (ClampMin = "1.0"))
+	float InteractionImpulseRadius = 400.f;
+
+	/** Strength for one-click interaction impulse test. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Interaction Test", meta = (ClampMin = "0.0"))
+	float InteractionImpulseStrength = 3.0f;
+
+	/** Turbulence boost (0..1) for one-click interaction impulse test. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Interaction Test", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float InteractionImpulseTurbulenceBoost = 0.45f;
+
+	/** Trigger a gameplay-style radial impulse at this actor location. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Foliage|Interaction Test")
+	void TriggerFoliageInteractionImpulse();
+
 protected:
 	virtual void BeginPlay() override;
     virtual void OnConstruction(const FTransform& Transform) override;
