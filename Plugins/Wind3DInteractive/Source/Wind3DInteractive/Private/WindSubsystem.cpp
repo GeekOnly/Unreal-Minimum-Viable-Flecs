@@ -1187,10 +1187,22 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 
 	const bool bShowText = CVarShowFoliageDisplacementText.GetValueOnGameThread() != 0;
 	const int32 ColorMode = CVarFoliageDisplacementDebugColorMode.GetValueOnGameThread();
+	const int32 RenderMode = CVarFoliageDisplacementDebugRenderMode.GetValueOnGameThread();
+	const bool bDrawInstances = (RenderMode == 0 || RenderMode == 2);
+	const bool bDrawHeatmap = (RenderMode == 1 || RenderMode == 2);
 	const int32 MaxDraw = FMath::Max(CVarFoliageDisplacementDebugMaxInstances.GetValueOnGameThread(), 1);
 	const float HeightOffset = CVarFoliageDisplacementDebugHeight.GetValueOnGameThread();
 	const float DrawScale = FMath::Max(CVarFoliageDisplacementDebugScale.GetValueOnGameThread(), 1.f);
 	const float CameraRadius = FMath::Max(CVarFoliageDisplacementDebugCameraRadius.GetValueOnGameThread(), 0.f);
+	const float HeatmapCellSize = FMath::Max(CVarFoliageDisplacementHeatmapCellSize.GetValueOnGameThread(), 25.f);
+	const int32 HeatmapMinSamples = FMath::Max(CVarFoliageDisplacementHeatmapMinSamples.GetValueOnGameThread(), 1);
+	const int32 HeatmapMaxClusters = FMath::Max(CVarFoliageDisplacementHeatmapMaxClusters.GetValueOnGameThread(), 1);
+	const float HeatmapPointSizeMin = FMath::Max(CVarFoliageDisplacementHeatmapPointSizeMin.GetValueOnGameThread(), 1.f);
+	const float HeatmapPointSizeMax = FMath::Max(CVarFoliageDisplacementHeatmapPointSizeMax.GetValueOnGameThread(), HeatmapPointSizeMin);
+	const float HeatmapHeight = CVarFoliageDisplacementHeatmapHeight.GetValueOnGameThread();
+	const bool bDistanceOptimize = CVarFoliageDisplacementDistanceOptimize.GetValueOnGameThread() != 0;
+	const float DistanceNear = FMath::Max(CVarFoliageDisplacementDistanceNear.GetValueOnGameThread(), 0.f);
+	const float DistanceFar = FMath::Max(CVarFoliageDisplacementDistanceFar.GetValueOnGameThread(), DistanceNear + 1.f);
 	const float EffectiveMaxSpeed = FMath::Min(FWindTextureManager::MaxWindSpeed, 1000.f);
 
 	FVector CameraLocation = FVector::ZeroVector;
@@ -1205,6 +1217,7 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 	}
 
 	const float CameraRadiusSq = CameraRadius * CameraRadius;
+	const float InvDistanceRange = 1.f / (DistanceFar - DistanceNear);
 
 	auto ResolveDebugColor = [ColorMode](float DispNorm) -> FColor
 	{
@@ -1226,11 +1239,25 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 		}
 	};
 
+	struct FFoliageHeatCluster
+	{
+		FVector PositionSum = FVector::ZeroVector;
+		float DisplacementNormSum = 0.f;
+		float MaxDisplacementNorm = 0.f;
+		int32 Count = 0;
+	};
+
+	TMap<FIntVector, FFoliageHeatCluster> HeatClusters;
+	HeatClusters.Reserve(2048);
+
 	int32 DrawCount = 0;
 	int32 RadiusSkipped = 0;
+	int32 HeatSourceCount = 0;
 	ECSWorld->each(
-		[World, bShowText, MaxDraw, HeightOffset, DrawScale, EffectiveMaxSpeed,
-			CameraRadiusSq, bHasCamera, CameraLocation, &ResolveDebugColor, &DrawCount, &RadiusSkipped](
+		[World, bShowText, bDrawInstances, bDrawHeatmap, MaxDraw, HeightOffset, DrawScale, EffectiveMaxSpeed,
+			CameraRadiusSq, bHasCamera, CameraLocation, HeatmapCellSize, HeatmapHeight,
+			DistanceNear, InvDistanceRange, DistanceFar, bDistanceOptimize,
+			&ResolveDebugColor, &DrawCount, &RadiusSkipped, &HeatClusters, &HeatSourceCount](
 			const FFoliageWorldPosition& Pos,
 			const FWindReceiver& Recv,
 			const FWindVelocityAtEntity& WindAt)
@@ -1244,20 +1271,52 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 				}
 			}
 
+			const float MaxBendRef = FMath::Max(Recv.Sensitivity * 2.8f, 0.35f);
+			const float DispNorm = FMath::Clamp(Recv.DisplacementCurrent / MaxBendRef, 0.f, 1.f);
+			const float WindNorm = FMath::Clamp(Recv.FilteredWindSpeed / EffectiveMaxSpeed, 0.f, 1.f);
+
+			float DistAlpha = 0.f;
+			if (bDistanceOptimize && bHasCamera)
+			{
+				const float Dist = FVector::Dist(Pos.Location, CameraLocation);
+				DistAlpha = FMath::Clamp((Dist - DistanceNear) * InvDistanceRange, 0.f, 1.f);
+			}
+
+			if (bDrawHeatmap)
+			{
+				const FIntVector ClusterKey(
+					FMath::FloorToInt(Pos.Location.X / HeatmapCellSize),
+					FMath::FloorToInt(Pos.Location.Y / HeatmapCellSize),
+					FMath::FloorToInt(Pos.Location.Z / HeatmapCellSize));
+
+				FFoliageHeatCluster& Cluster = HeatClusters.FindOrAdd(ClusterKey);
+				Cluster.PositionSum += Pos.Location;
+				Cluster.DisplacementNormSum += DispNorm;
+				Cluster.MaxDisplacementNorm = FMath::Max(Cluster.MaxDisplacementNorm, DispNorm);
+				Cluster.Count++;
+				HeatSourceCount++;
+			}
+
+			if (!bDrawInstances)
+			{
+				return;
+			}
+
 			if (DrawCount >= MaxDraw)
 			{
 				return;
 			}
 			++DrawCount;
 
-			const float MaxBendRef = FMath::Max(Recv.Sensitivity * 2.8f, 0.35f);
-			const float DispNorm = FMath::Clamp(Recv.DisplacementCurrent / MaxBendRef, 0.f, 1.f);
-			const float WindNorm = FMath::Clamp(Recv.FilteredWindSpeed / EffectiveMaxSpeed, 0.f, 1.f);
-
 			const FVector BasePos = Pos.Location + FVector(0.f, 0.f, HeightOffset);
 			const FVector TipPos = BasePos + FVector(0.f, 0.f, Recv.DisplacementCurrent * DrawScale);
 
-			const FColor DispColor = ResolveDebugColor(DispNorm);
+			FColor DispColor = ResolveDebugColor(DispNorm);
+			if (bDistanceOptimize)
+			{
+				const FLinearColor Scaled = FLinearColor(DispColor) * FMath::Lerp(1.f, 0.35f, DistAlpha);
+				DispColor = Scaled.ToFColor(true);
+			}
 
 			const float Thickness = FMath::Lerp(1.5f, 4.0f, DispNorm);
 			DrawDebugLine(World, BasePos, TipPos, DispColor, false, 0.f, 0, Thickness);
@@ -1292,12 +1351,88 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 			}
 		});
 
+	int32 DrawnClusters = 0;
+	if (bDrawHeatmap)
+	{
+		for (const TPair<FIntVector, FFoliageHeatCluster>& Pair : HeatClusters)
+		{
+			if (DrawnClusters >= HeatmapMaxClusters)
+			{
+				break;
+			}
+
+			const FFoliageHeatCluster& Cluster = Pair.Value;
+			if (Cluster.Count < HeatmapMinSamples)
+			{
+				continue;
+			}
+
+			const FVector Center = Cluster.PositionSum / FMath::Max(Cluster.Count, 1);
+			const float AvgDispNorm = Cluster.DisplacementNormSum / FMath::Max(Cluster.Count, 1);
+			const float Heat = FMath::Clamp(FMath::Lerp(AvgDispNorm, Cluster.MaxDisplacementNorm, 0.35f), 0.f, 1.f);
+			const FVector DrawPos = Center + FVector(0.f, 0.f, HeatmapHeight);
+
+			float DistAlpha = 0.f;
+			if (bDistanceOptimize && bHasCamera)
+			{
+				const float Dist = FVector::Dist(DrawPos, CameraLocation);
+				DistAlpha = FMath::Clamp((Dist - DistanceNear) * InvDistanceRange, 0.f, 1.f);
+				if (Dist > DistanceFar * 1.2f)
+				{
+					continue;
+				}
+			}
+
+			FColor HeatColor = ResolveDebugColor(Heat);
+			if (bDistanceOptimize)
+			{
+				const FLinearColor Scaled = FLinearColor(HeatColor) * FMath::Lerp(1.f, 0.28f, DistAlpha);
+				HeatColor = Scaled.ToFColor(true);
+			}
+
+			const float SizeByCount = FMath::Lerp(0.75f, 1.25f, FMath::Clamp(static_cast<float>(Cluster.Count) / 12.f, 0.f, 1.f));
+			const float BasePointSize = FMath::Lerp(HeatmapPointSizeMax, HeatmapPointSizeMin, DistAlpha);
+			const float PointSize = BasePointSize * SizeByCount;
+
+			DrawDebugPoint(World, DrawPos, PointSize, HeatColor, false, 0.f, 0);
+			DrawDebugBox(World,
+				DrawPos,
+				FVector(HeatmapCellSize * 0.35f, HeatmapCellSize * 0.35f, 6.f),
+				HeatColor,
+				false,
+				0.f,
+				0,
+				FMath::Lerp(0.8f, 2.0f, Heat));
+
+			if (bShowText)
+			{
+				const FString ClusterLabel = FString::Printf(
+					TEXT("Heat %.2f  C %d"),
+					Heat,
+					Cluster.Count);
+				DrawDebugString(World,
+					DrawPos + FVector(0.f, 0.f, 18.f),
+					ClusterLabel,
+					nullptr,
+					HeatColor,
+					0.f,
+					false,
+					0.9f);
+			}
+
+			DrawnClusters++;
+		}
+	}
+
 	if (bHasCamera && CameraRadiusSq > 0.f)
 	{
 		const FString RadiusInfo = FString::Printf(
-			TEXT("FoliageDebug Radius %.0fcm | Drawn %d | SkippedByRadius %d"),
+			TEXT("FoliageDebug R %.0fcm | Mode %d | Inst %d | Cluster %d | HeatSrc %d | SkipR %d"),
 			CameraRadius,
+			RenderMode,
 			DrawCount,
+			DrawnClusters,
+			HeatSourceCount,
 			RadiusSkipped);
 		DrawDebugString(World,
 			CameraLocation + FVector(0.f, 0.f, 60.f),
