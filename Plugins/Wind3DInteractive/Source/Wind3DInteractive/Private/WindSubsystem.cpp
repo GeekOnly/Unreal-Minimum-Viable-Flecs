@@ -487,9 +487,27 @@ void UWindSubsystem::RegisterSystems()
 				auto* HISM = static_cast<UHierarchicalInstancedStaticMeshComponent*>(Foliage[I].HISMComponentPtr);
 				if (HISM && Foliage[I].InstanceIndex >= 0)
 				{
-					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, OutputDisplacement);
-					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotTurb, OutputTurbulence);
-					DirtyHISMs.Add(HISM);
+					const int32 InstanceCount = HISM->GetInstanceCount();
+					const int32 MaxCPDSlot = FMath::Max(Foliage[I].CPDSlotDisplace, Foliage[I].CPDSlotTurb);
+
+					if (Foliage[I].InstanceIndex < InstanceCount && MaxCPDSlot >= 0)
+					{
+						if (HISM->NumCustomDataFloats <= MaxCPDSlot)
+						{
+							HISM->SetNumCustomDataFloats(MaxCPDSlot + 1);
+						}
+
+						const int32 RequiredCustomDataCount = InstanceCount * HISM->NumCustomDataFloats;
+						if (RequiredCustomDataCount <= 0 || HISM->PerInstanceSMCustomData.Num() < RequiredCustomDataCount)
+						{
+							continue;
+						}
+
+						// bMarkRenderStateDirty = false for per-instance writes; we batch-mark later.
+						HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, OutputDisplacement, false);
+						HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotTurb, OutputTurbulence, false);
+						DirtyHISMs.Add(HISM);
+					}
 				}
 			}
 		});
@@ -1032,6 +1050,42 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 	float WindFilterAlpha)
 {
 	if (!ECSWorld || !HISM) return FWindEntityHandle();
+
+	if (InstanceIndex < 0 || InstanceIndex >= HISM->GetInstanceCount())
+	{
+		UE_LOG(LogWind3D, Warning,
+			TEXT("RegisterFoliageInstance skipped: invalid InstanceIndex=%d (Count=%d, HISM=%s)"),
+			InstanceIndex,
+			HISM->GetInstanceCount(),
+			*HISM->GetName());
+		return FWindEntityHandle();
+	}
+
+	const int32 MaxCPDSlot = FMath::Max(CPDSlotDisplace, CPDSlotTurbulence);
+	if (MaxCPDSlot < 0)
+	{
+		UE_LOG(LogWind3D, Warning,
+			TEXT("RegisterFoliageInstance skipped: invalid CPD slots (Displace=%d, Turb=%d, HISM=%s)"),
+			CPDSlotDisplace,
+			CPDSlotTurbulence,
+			*HISM->GetName());
+		return FWindEntityHandle();
+	}
+
+	if (HISM->NumCustomDataFloats <= MaxCPDSlot)
+	{
+		HISM->SetNumCustomDataFloats(MaxCPDSlot + 1);
+	}
+
+	if (HISM->PerInstanceSMCustomData.Num() <= 0)
+	{
+		UE_LOG(LogWind3D, Warning,
+			TEXT("RegisterFoliageInstance skipped: custom data storage not initialized (HISM=%s, NumCustomDataFloats=%d, Instances=%d)"),
+			*HISM->GetName(),
+			HISM->NumCustomDataFloats,
+			HISM->GetInstanceCount());
+		return FWindEntityHandle();
+	}
 
 	FWindReceiver Receiver;
 	Receiver.Sensitivity = Sensitivity;

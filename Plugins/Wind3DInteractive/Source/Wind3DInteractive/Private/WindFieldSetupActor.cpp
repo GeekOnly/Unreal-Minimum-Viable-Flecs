@@ -317,8 +317,7 @@ void AWindFieldSetupActor::AutoRegisterFoliage(UWindSubsystem* WindSys)
         const int32 MinRequiredCustomData = FMath::Max(FoliageCPDSlotDisplace, FoliageCPDSlotTurbulence) + 1;
         if (HISM->NumCustomDataFloats < MinRequiredCustomData)
         {
-            HISM->NumCustomDataFloats = MinRequiredCustomData;
-            HISM->MarkRenderStateDirty();
+            HISM->SetNumCustomDataFloats(MinRequiredCustomData);
         }
 
         const int32 InstanceCount = HISM->GetInstanceCount();
