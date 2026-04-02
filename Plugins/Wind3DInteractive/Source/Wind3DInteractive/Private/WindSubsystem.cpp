@@ -6,6 +6,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/OverlapResult.h"
+#include "Camera/PlayerCameraManager.h"
+#include "GameFramework/PlayerController.h"
 
 static TAutoConsoleVariable<int32> CVarShowWindDebug(
 	TEXT("Wind3D.ShowDebug"),
@@ -70,6 +72,23 @@ static TAutoConsoleVariable<float> CVarFoliageDisplacementDebugScale(
 	TEXT("Wind3D.FoliageDisplacementDebugScale"),
 	45.f,
 	TEXT("World scale (cm) for displacement debug line length."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementDebugColorMode(
+	TEXT("Wind3D.FoliageDisplacementDebugColorMode"),
+	1,
+	TEXT("Color mode for foliage displacement debug.\n")
+	TEXT("0: Smooth gradient\n")
+	TEXT("1: High-contrast bands (recommended for dense foliage)\n")
+	TEXT("2: Binary (stable vs over-bend)"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementDebugCameraRadius(
+	TEXT("Wind3D.FoliageDisplacementDebugCameraRadius"),
+	0.f,
+	TEXT("Only draw foliage displacement debug within radius (cm) from camera. 0 = no radius filter."),
 	ECVF_RenderThreadSafe
 );
 
@@ -1092,18 +1111,64 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 	if (!World || !ECSWorld) return;
 
 	const bool bShowText = CVarShowFoliageDisplacementText.GetValueOnGameThread() != 0;
+	const int32 ColorMode = CVarFoliageDisplacementDebugColorMode.GetValueOnGameThread();
 	const int32 MaxDraw = FMath::Max(CVarFoliageDisplacementDebugMaxInstances.GetValueOnGameThread(), 1);
 	const float HeightOffset = CVarFoliageDisplacementDebugHeight.GetValueOnGameThread();
 	const float DrawScale = FMath::Max(CVarFoliageDisplacementDebugScale.GetValueOnGameThread(), 1.f);
+	const float CameraRadius = FMath::Max(CVarFoliageDisplacementDebugCameraRadius.GetValueOnGameThread(), 0.f);
 	const float EffectiveMaxSpeed = FMath::Min(FWindTextureManager::MaxWindSpeed, 1000.f);
 
+	FVector CameraLocation = FVector::ZeroVector;
+	bool bHasCamera = false;
+	if (APlayerController* PC = World->GetFirstPlayerController())
+	{
+		if (PC->PlayerCameraManager)
+		{
+			CameraLocation = PC->PlayerCameraManager->GetCameraLocation();
+			bHasCamera = true;
+		}
+	}
+
+	const float CameraRadiusSq = CameraRadius * CameraRadius;
+
+	auto ResolveDebugColor = [ColorMode](float DispNorm) -> FColor
+	{
+		switch (ColorMode)
+		{
+		case 0: // Smooth gradient
+			return FLinearColor::LerpUsingHSV(FLinearColor::Green, FLinearColor::Red, DispNorm).ToFColor(true);
+
+		case 2: // Binary
+			return (DispNorm >= 0.65f) ? FColor::Red : FColor::Green;
+
+		case 1: // High-contrast bands
+		default:
+			if (DispNorm < 0.20f) return FColor(30, 160, 255);   // blue
+			if (DispNorm < 0.45f) return FColor(0, 255, 210);    // cyan
+			if (DispNorm < 0.70f) return FColor::Yellow;         // yellow
+			if (DispNorm < 0.90f) return FColor(255, 140, 0);    // orange
+			return FColor::Red;
+		}
+	};
+
 	int32 DrawCount = 0;
+	int32 RadiusSkipped = 0;
 	ECSWorld->each(
-		[World, bShowText, MaxDraw, HeightOffset, DrawScale, EffectiveMaxSpeed, &DrawCount](
+		[World, bShowText, MaxDraw, HeightOffset, DrawScale, EffectiveMaxSpeed,
+			CameraRadiusSq, bHasCamera, CameraLocation, &ResolveDebugColor, &DrawCount, &RadiusSkipped](
 			const FFoliageWorldPosition& Pos,
 			const FWindReceiver& Recv,
 			const FWindVelocityAtEntity& WindAt)
 		{
+			if (CameraRadiusSq > 0.f && bHasCamera)
+			{
+				if (FVector::DistSquared(Pos.Location, CameraLocation) > CameraRadiusSq)
+				{
+					++RadiusSkipped;
+					return;
+				}
+			}
+
 			if (DrawCount >= MaxDraw)
 			{
 				return;
@@ -1117,12 +1182,12 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 			const FVector BasePos = Pos.Location + FVector(0.f, 0.f, HeightOffset);
 			const FVector TipPos = BasePos + FVector(0.f, 0.f, Recv.DisplacementCurrent * DrawScale);
 
-			const FLinearColor DispColorLinear = FLinearColor::LerpUsingHSV(FLinearColor::Green, FLinearColor::Red, DispNorm);
-			const FColor DispColor = DispColorLinear.ToFColor(true);
+			const FColor DispColor = ResolveDebugColor(DispNorm);
 
-			DrawDebugLine(World, BasePos, TipPos, DispColor, false, 0.f, 0, 2.5f);
+			const float Thickness = FMath::Lerp(1.5f, 4.0f, DispNorm);
+			DrawDebugLine(World, BasePos, TipPos, DispColor, false, 0.f, 0, Thickness);
 			DrawDebugPoint(World, BasePos, 5.f, DispColor, false, 0.f, 0);
-			DrawDebugPoint(World, TipPos, 8.f, FColor::Yellow, false, 0.f, 0);
+			DrawDebugPoint(World, TipPos, FMath::Lerp(6.f, 12.f, DispNorm), DispColor, false, 0.f, 0);
 
 			const FVector WindDir = WindAt.Velocity.GetSafeNormal();
 			if (!WindDir.IsNearlyZero())
@@ -1136,10 +1201,11 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 			if (bShowText)
 			{
 				const FString Label = FString::Printf(
-					TEXT("Disp %.2f  Vel %.2f  Wind %.0f"),
+					TEXT("Disp %.2f  Vel %.2f  Wind %.0f  N %.2f"),
 					Recv.DisplacementCurrent,
 					Recv.DisplacementVelocity,
-					Recv.FilteredWindSpeed);
+					Recv.FilteredWindSpeed,
+					DispNorm);
 				DrawDebugString(World,
 					TipPos + FVector(0.f, 0.f, 10.f),
 					Label,
@@ -1150,6 +1216,23 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 					1.0f);
 			}
 		});
+
+	if (bHasCamera && CameraRadiusSq > 0.f)
+	{
+		const FString RadiusInfo = FString::Printf(
+			TEXT("FoliageDebug Radius %.0fcm | Drawn %d | SkippedByRadius %d"),
+			CameraRadius,
+			DrawCount,
+			RadiusSkipped);
+		DrawDebugString(World,
+			CameraLocation + FVector(0.f, 0.f, 60.f),
+			RadiusInfo,
+			nullptr,
+			FColor::White,
+			0.f,
+			false,
+			1.0f);
+	}
 }
 
 // --- Audio Integration ---
