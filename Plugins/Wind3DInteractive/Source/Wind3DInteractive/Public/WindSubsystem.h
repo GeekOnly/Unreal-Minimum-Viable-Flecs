@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "IWindSolver.h"
+#include "WindCascade.h"
 #include "WindTypes.h"
 #include "WindTextureManager.h"
 #include "Engine/VolumeTexture.h"
@@ -135,9 +136,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Wind3D|Audio")
 	float GetWindTurbulenceAtPosition(FVector WorldPosition) const;
 
+	// --- Cascade API ---
+
+	/** Setup cascaded wind grids (replaces SetupWindGrid for multi-resolution). C++ only. */
+	void SetupWindCascade(const TArray<FWindCascadeConfig>& Configs);
+
+	/** Enable/disable cascade mode. When disabled, uses single grid (legacy). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind3D|Cascade")
+	bool bUseCascade = false;
+
+	/** Number of cascade levels (used when bUseCascade and no explicit configs). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind3D|Cascade", meta = (ClampMin = "1", ClampMax = "4", EditCondition = "bUseCascade"))
+	int32 NumCascadeLevels = 3;
+
 	// --- C++ access ---
 	flecs::world* GetEcsWorld() const { return ECSWorld.Get(); }
-	IWindSolver& GetSolver() const { check(Solver.IsValid()); return *Solver; }
+
+	/** Get the primary solver (finest cascade level if cascaded, or the single solver). */
+	IWindSolver& GetSolver() const;
+
+	/** Get the cascade manager (only valid when bUseCascade). */
+	FWindCascade* GetCascade() { return Cascade.IsValid() ? Cascade.Get() : nullptr; }
 
 	// Legacy compat — prefer GetSolver()
 	const IWindSolver& GetWindGrid() const { return GetSolver(); }
@@ -175,7 +194,8 @@ public:
 
 protected:
 	TUniquePtr<flecs::world> ECSWorld;
-	TUniquePtr<IWindSolver> Solver;
+	TUniquePtr<IWindSolver> Solver;          // Single-grid mode
+	TUniquePtr<FWindCascade> Cascade;        // Cascade mode (multi-resolution)
 	FVector AmbientWind = FVector(100.f, 0.f, 0.f);
 
 private:

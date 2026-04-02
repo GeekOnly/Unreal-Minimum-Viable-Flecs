@@ -114,6 +114,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Obstacles", meta = (EditCondition = "bEnableObstacles"))
 	TEnumAsByte<ECollisionChannel> ObstacleChannel = ECC_WorldStatic;
 
+	// --- Cascade (Multi-Resolution) ---
+
+	/** Enable cascaded multi-resolution grid. Finer detail near player, wider coverage at distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Cascade")
+	bool bUseCascade = false;
+
+	/** Number of cascade levels. Each level doubles the cell size and coverage. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Cascade", meta = (ClampMin = "1", ClampMax = "4", EditCondition = "bUseCascade"))
+	int32 NumCascadeLevels = 3;
+
 	/** Optional: actor for the grid to follow (e.g. player pawn). Leave None for static grid. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Grid")
 	TSoftObjectPtr<AActor> CenterActor;

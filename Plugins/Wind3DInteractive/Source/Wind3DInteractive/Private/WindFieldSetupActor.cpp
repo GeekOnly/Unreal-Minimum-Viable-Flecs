@@ -51,6 +51,10 @@ void AWindFieldSetupActor::BeginPlay()
         const FVector Extent = PreviewBox->GetScaledBoxExtent();
         const FVector Origin = GetActorLocation() - Extent;
 
+        // Cascade settings (must be set BEFORE SetupWindGrid)
+        WindSys->bUseCascade = bUseCascade;
+        WindSys->NumCascadeLevels = NumCascadeLevels;
+
         WindSys->SetupWindGrid(Origin, CellSize, GridSizeX, GridSizeY, GridSizeZ);
         WindSys->SetAmbientWind(AmbientWind);
 

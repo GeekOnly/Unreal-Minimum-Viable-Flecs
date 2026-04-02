@@ -1,4 +1,5 @@
 #include "WindSubsystem.h"
+#include "WindCascade.h"
 #include "WindComponents.h"
 #include "Wind3DInteractiveModule.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -76,6 +77,12 @@ void UWindSubsystem::Deinitialize()
 	TextureManager.Shutdown();
 	bTextureManagerInitialized = false;
 
+	if (Cascade.IsValid())
+	{
+		Cascade->Shutdown();
+		Cascade.Reset();
+	}
+
 	ECSWorld.Reset();
 
 	UE_LOG(LogWind3D, Log, TEXT("UWindSubsystem deinitialized."));
@@ -114,9 +121,17 @@ void UWindSubsystem::RegisterSystems()
 		.iter([this](flecs::iter& It, const FWindMotorData* Motors)
 		{
 			const float DT = It.delta_time();
+			const bool bCasc = bUseCascade && Cascade.IsValid() && Cascade->IsInitialized();
 			for (auto I : It)
 			{
-				Solver->InjectMotor(Motors[I], DT);
+				if (bCasc)
+				{
+					Cascade->InjectMotor(Motors[I], DT);
+				}
+				else
+				{
+					Solver->InjectMotor(Motors[I], DT);
+				}
 			}
 		});
 
@@ -126,11 +141,19 @@ void UWindSubsystem::RegisterSystems()
 		{
 			if (!GridComp) return;
 			const float DT = It.delta_time();
-			for (auto I : It)
+			const bool bCasc = bUseCascade && Cascade.IsValid() && Cascade->IsInitialized();
+			if (bCasc)
 			{
-				if (GridComp[I].SolverPtr)
+				Cascade->Advect(AdvectionForce, DT, bForwardAdvection);
+			}
+			else
+			{
+				for (auto I : It)
 				{
-					GridComp[I].SolverPtr->Advect(AdvectionForce, DT, bForwardAdvection);
+					if (GridComp[I].SolverPtr)
+					{
+						GridComp[I].SolverPtr->Advect(AdvectionForce, DT, bForwardAdvection);
+					}
 				}
 			}
 		});
@@ -139,10 +162,19 @@ void UWindSubsystem::RegisterSystems()
 	ECSWorld->system<const FFoliageWorldPosition, FWindVelocityAtEntity>("SampleWindForFoliage")
 		.iter([this](flecs::iter& It, const FFoliageWorldPosition* Pos, FWindVelocityAtEntity* WindAt)
 		{
+			const bool bCasc = bUseCascade && Cascade.IsValid() && Cascade->IsInitialized();
 			for (auto I : It)
 			{
-				WindAt[I].Velocity = Solver->SampleVelocityAt(Pos[I].Location);
-				WindAt[I].Turbulence = Solver->SampleTurbulenceAt(Pos[I].Location);
+				if (bCasc)
+				{
+					WindAt[I].Velocity = Cascade->SampleVelocityAt(Pos[I].Location);
+					WindAt[I].Turbulence = Cascade->SampleTurbulenceAt(Pos[I].Location);
+				}
+				else
+				{
+					WindAt[I].Velocity = Solver->SampleVelocityAt(Pos[I].Location);
+					WindAt[I].Turbulence = Solver->SampleTurbulenceAt(Pos[I].Location);
+				}
 			}
 		});
 
@@ -188,6 +220,8 @@ void UWindSubsystem::Tick(float DeltaTime)
 	{
 		DirtyHISMs.Reset();
 
+		const bool bCascadeActive = bUseCascade && Cascade.IsValid() && Cascade->IsInitialized();
+
 		// === GoW Wind Simulation Pipeline ===
 
 		// 0. World Wind — rotate ambient direction with noise
@@ -200,43 +234,71 @@ void UWindSubsystem::Tick(float DeltaTime)
 		UpdateOccupancy();
 
 		// 2. Decay toward ambient (now with rotating direction)
-		Solver->DecayToAmbient(AmbientWind, DecayRate, DeltaTime);
+		if (bCascadeActive)
+		{
+			Cascade->DecayToAmbient(AmbientWind, DecayRate, DeltaTime);
+		}
+		else
+		{
+			Solver->DecayToAmbient(AmbientWind, DecayRate, DeltaTime);
+		}
 
 		// 2.5 Ensure Flecs Singleton has valid pointer (in case SetupWindGrid re-created Solver)
 		flecs::entity GridEntity = ECSWorld->entity("WindGridSingleton");
-		GridEntity.set<FWindGridComponent>({Solver.Get()});
+		GridEntity.set<FWindGridComponent>({&GetSolver()});
 
 		// 3. Motor Injection & Advection (ECS pipeline)
 		ECSWorld->progress(DeltaTime);
 
 		// 4. Diffusion — 3D blur to spread wind naturally (multi-pass)
-		Solver->Diffuse(DiffusionRate, DeltaTime, DiffusionIterations);
+		if (bCascadeActive)
+		{
+			Cascade->Diffuse(DiffusionRate, DeltaTime, DiffusionIterations);
+		}
+		else
+		{
+			Solver->Diffuse(DiffusionRate, DeltaTime, DiffusionIterations);
+		}
 
 		// 5. Advection is now handled inside Flecs progress() above.
 
 		// 5.5. Pressure projection — make velocity divergence-free
-		// This is what causes wind to flow AROUND obstacles instead of stopping
 		if (PressureIterations > 0)
 		{
-			Solver->ProjectPressure(PressureIterations);
+			if (bCascadeActive)
+			{
+				Cascade->ProjectPressure(PressureIterations);
+			}
+			else
+			{
+				Solver->ProjectPressure(PressureIterations);
+			}
 		}
 
 		// 5.75. Boundary fade-out — prevent hard cutoff at grid edges
 		if (BoundaryFadeCells > 0)
 		{
-			Solver->BoundaryFadeOut(BoundaryFadeCells);
+			if (bCascadeActive)
+			{
+				Cascade->BoundaryFadeOut(BoundaryFadeCells);
+			}
+			else
+			{
+				Solver->BoundaryFadeOut(BoundaryFadeCells);
+			}
 		}
 
-		// 6. Material Integration — update texture + MPC
+		// 6. Material Integration — update texture + MPC (uses finest cascade)
 		if (bEnableMaterialIntegration)
 		{
+			const IWindSolver& PrimarySolver = GetSolver();
 			if (!bTextureManagerInitialized)
 			{
-				TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
+				TextureManager.Initialize(GetWorld(), PrimarySolver.GetSizeX(), PrimarySolver.GetSizeY(), PrimarySolver.GetSizeZ());
 				bTextureManagerInitialized = true;
 			}
 			TextureManager.SetVizZSlice(WindVizZSlice);
-			TextureManager.UpdateFromGrid(*Solver, AmbientWind, OverallPower);
+			TextureManager.UpdateFromGrid(PrimarySolver, AmbientWind, OverallPower);
 		}
 
 		// Batch mark render state dirty for all affected HISMs
@@ -257,12 +319,53 @@ TStatId UWindSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UWindSubsystem, STATGROUP_Tickables);
 }
 
+IWindSolver& UWindSubsystem::GetSolver() const
+{
+	if (Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		return Cascade->GetFinestSolver();
+	}
+	check(Solver.IsValid());
+	return *Solver;
+}
+
 void UWindSubsystem::SetupWindGrid(FVector Origin, float CellSize, int32 InSizeX, int32 InSizeY, int32 InSizeZ)
 {
-    UE_LOG(LogWind3D, Log, TEXT("SetupWindGrid Called: Origin=%s, CellSize=%f, Size=(%d, %d, %d)"), 
+    UE_LOG(LogWind3D, Log, TEXT("SetupWindGrid Called: Origin=%s, CellSize=%f, Size=(%d, %d, %d)"),
         *Origin.ToString(), CellSize, InSizeX, InSizeY, InSizeZ);
 
-	// Re-create solver with new dimensions (respects Wind3D.UseGPU CVar)
+	if (bUseCascade)
+	{
+		// Build cascade configs from the single-grid params as base
+		TArray<FWindCascadeConfig> Configs;
+		const float BaseCellSize = FMath::Max(CellSize, 10.f);
+
+		for (int32 i = 0; i < NumCascadeLevels; i++)
+		{
+			FWindCascadeConfig Cfg;
+			const float Scale = FMath::Pow(2.f, static_cast<float>(i));
+			Cfg.CellSize = BaseCellSize * Scale;
+			// Finer levels get more cells, coarser levels keep base size
+			const float InvScale = 1.f / Scale;
+			Cfg.SizeX = FMath::Clamp(FMath::CeilToInt(InSizeX * 2.f * InvScale), 8, 128);
+			Cfg.SizeY = FMath::Clamp(FMath::CeilToInt(InSizeY * 2.f * InvScale), 8, 128);
+			Cfg.SizeZ = FMath::Clamp(InSizeZ, 4, 64);
+			Cfg.BlendCells = FMath::Max(2, 4 - i);
+			Configs.Add(Cfg);
+		}
+
+		SetupWindCascade(Configs);
+
+		// Set origin centered
+		const FVector HalfExtent = FVector(
+			InSizeX * CellSize * 0.5f,
+			InSizeY * CellSize * 0.5f,
+			InSizeZ * CellSize * 0.5f);
+		Cascade->SetWorldOriginCentered(Origin + HalfExtent);
+		return;
+	}
+
+	// Single-grid mode (legacy)
 	Solver = CreateSolver();
 	Solver->SetWorldOrigin(Origin);
 	Solver->Initialize(
@@ -279,6 +382,30 @@ void UWindSubsystem::SetupWindGrid(FVector Origin, float CellSize, int32 InSizeX
 	}
 	TextureManager.Initialize(GetWorld(), Solver->GetSizeX(), Solver->GetSizeY(), Solver->GetSizeZ());
 	bTextureManagerInitialized = true;
+}
+
+void UWindSubsystem::SetupWindCascade(const TArray<FWindCascadeConfig>& Configs)
+{
+	const bool bUseGPU = CVarUseGPUWind.GetValueOnGameThread() != 0;
+
+	if (!Cascade.IsValid())
+	{
+		Cascade = MakeUnique<FWindCascade>();
+	}
+	Cascade->Initialize(Configs, bUseGPU);
+
+	// Texture manager uses finest cascade for material integration
+	const IWindSolver& Finest = Cascade->GetFinestSolver();
+	if (bTextureManagerInitialized)
+	{
+		TextureManager.Shutdown();
+		bTextureManagerInitialized = false;
+	}
+	TextureManager.Initialize(GetWorld(), Finest.GetSizeX(), Finest.GetSizeY(), Finest.GetSizeZ());
+	bTextureManagerInitialized = true;
+
+	UE_LOG(LogWind3D, Log, TEXT("SetupWindCascade: %d levels, finest=%dx%dx%d @ %.0f cm"),
+		Configs.Num(), Finest.GetSizeX(), Finest.GetSizeY(), Finest.GetSizeZ(), Finest.GetCellSize());
 }
 
 void UWindSubsystem::SetAmbientWind(FVector AmbientVelocity)
@@ -343,12 +470,26 @@ void UWindSubsystem::UpdateGridOffset()
 	{
 		PreviousGridCenter = CurrentCenter;
 		bGridCenterInitialized = true;
+
+		// Initialize cascade origins centered on player
+		if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+		{
+			Cascade->SetWorldOriginCentered(CurrentCenter);
+		}
 		return;
 	}
 
 	const FVector Delta = CurrentCenter - PreviousGridCenter;
 
-	// Convert world-space delta to cell offset
+	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		// Cascade handles per-level shifting internally
+		Cascade->ShiftAllGrids(Delta, AmbientWind);
+		PreviousGridCenter = CurrentCenter;
+		return;
+	}
+
+	// Single-grid mode (legacy)
 	const float CS = Solver->GetCellSize();
 	const FIntVector CellOffset(
 		FMath::FloorToInt(Delta.X / CS),
@@ -358,10 +499,8 @@ void UWindSubsystem::UpdateGridOffset()
 
 	if (CellOffset.X == 0 && CellOffset.Y == 0 && CellOffset.Z == 0) return;
 
-	// Shift grid data in opposite direction (so wind stays in correct world space)
 	Solver->ShiftData(FIntVector(-CellOffset.X, -CellOffset.Y, -CellOffset.Z), AmbientWind);
 
-	// Move grid origin by the cell-snapped amount
 	const FVector OriginShift(
 		CellOffset.X * CS,
 		CellOffset.Y * CS,
@@ -369,7 +508,6 @@ void UWindSubsystem::UpdateGridOffset()
 	);
 	Solver->SetWorldOrigin(Solver->GetWorldOrigin() + OriginShift);
 
-	// Update previous center (only consume the cell-snapped portion)
 	PreviousGridCenter += OriginShift;
 }
 
@@ -384,44 +522,58 @@ void UWindSubsystem::UpdateOccupancy()
 	UWorld* World = GetWorld();
 	if (!World) return;
 
-	Solver->ClearSolids();
-
-	// Single overlap query for the entire grid volume (replaces O(n³) per-cell queries)
-	const FVector GridMin = Solver->GetWorldOrigin();
-	const float CS = Solver->GetCellSize();
-	const FVector GridExtent = FVector(
-		Solver->GetSizeX() * CS,
-		Solver->GetSizeY() * CS,
-		Solver->GetSizeZ() * CS);
-	const FVector GridCenter = GridMin + GridExtent * 0.5f;
-
-	TArray<FOverlapResult> Overlaps;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(WindOccupancy), false);
-	World->OverlapMultiByChannel(
-		Overlaps, GridCenter, FQuat::Identity, ObstacleChannel,
-		FCollisionShape::MakeBox(GridExtent * 0.5f), Params);
-
-	// Rasterize each overlapping component's AABB into the grid
-	for (const FOverlapResult& Result : Overlaps)
+	// Helper lambda: rasterize obstacles into a single solver
+	auto RasterizeObstacles = [&](IWindSolver& S)
 	{
-		UPrimitiveComponent* Comp = Result.GetComponent();
-		if (!Comp) continue;
+		S.ClearSolids();
 
-		const FBox Bounds = Comp->Bounds.GetBox();
-		FIntVector MinCell = Solver->WorldToCell(Bounds.Min);
-		FIntVector MaxCell = Solver->WorldToCell(Bounds.Max);
+		const FVector GridMin = S.GetWorldOrigin();
+		const float CS = S.GetCellSize();
+		const FVector GridExtent = FVector(
+			S.GetSizeX() * CS,
+			S.GetSizeY() * CS,
+			S.GetSizeZ() * CS);
+		const FVector GridCenter = GridMin + GridExtent * 0.5f;
 
-		MinCell.X = FMath::Clamp(MinCell.X, 0, Solver->GetSizeX() - 1);
-		MinCell.Y = FMath::Clamp(MinCell.Y, 0, Solver->GetSizeY() - 1);
-		MinCell.Z = FMath::Clamp(MinCell.Z, 0, Solver->GetSizeZ() - 1);
-		MaxCell.X = FMath::Clamp(MaxCell.X, 0, Solver->GetSizeX() - 1);
-		MaxCell.Y = FMath::Clamp(MaxCell.Y, 0, Solver->GetSizeY() - 1);
-		MaxCell.Z = FMath::Clamp(MaxCell.Z, 0, Solver->GetSizeZ() - 1);
+		TArray<FOverlapResult> Overlaps;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(WindOccupancy), false);
+		World->OverlapMultiByChannel(
+			Overlaps, GridCenter, FQuat::Identity, ObstacleChannel,
+			FCollisionShape::MakeBox(GridExtent * 0.5f), Params);
 
-		for (int32 Z = MinCell.Z; Z <= MaxCell.Z; Z++)
-			for (int32 Y = MinCell.Y; Y <= MaxCell.Y; Y++)
-				for (int32 X = MinCell.X; X <= MaxCell.X; X++)
-					Solver->MarkSolid(X, Y, Z);
+		for (const FOverlapResult& Result : Overlaps)
+		{
+			UPrimitiveComponent* Comp = Result.GetComponent();
+			if (!Comp) continue;
+
+			const FBox Bounds = Comp->Bounds.GetBox();
+			FIntVector MinCell = S.WorldToCell(Bounds.Min);
+			FIntVector MaxCell = S.WorldToCell(Bounds.Max);
+
+			MinCell.X = FMath::Clamp(MinCell.X, 0, S.GetSizeX() - 1);
+			MinCell.Y = FMath::Clamp(MinCell.Y, 0, S.GetSizeY() - 1);
+			MinCell.Z = FMath::Clamp(MinCell.Z, 0, S.GetSizeZ() - 1);
+			MaxCell.X = FMath::Clamp(MaxCell.X, 0, S.GetSizeX() - 1);
+			MaxCell.Y = FMath::Clamp(MaxCell.Y, 0, S.GetSizeY() - 1);
+			MaxCell.Z = FMath::Clamp(MaxCell.Z, 0, S.GetSizeZ() - 1);
+
+			for (int32 Z = MinCell.Z; Z <= MaxCell.Z; Z++)
+				for (int32 Y = MinCell.Y; Y <= MaxCell.Y; Y++)
+					for (int32 X = MinCell.X; X <= MaxCell.X; X++)
+						S.MarkSolid(X, Y, Z);
+		}
+	};
+
+	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		for (int32 i = 0; i < Cascade->GetNumLevels(); i++)
+		{
+			RasterizeObstacles(*Cascade->GetLevel(i).Solver);
+		}
+	}
+	else
+	{
+		RasterizeObstacles(*Solver);
 	}
 }
 
@@ -574,117 +726,134 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 
 FVector UWindSubsystem::QueryWindAtPosition(FVector WorldPosition) const
 {
+	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		return Cascade->SampleVelocityAt(WorldPosition) * OverallPower;
+	}
 	return Solver->SampleVelocityAt(WorldPosition) * OverallPower;
 }
 
 void UWindSubsystem::DrawDebugWind()
 {
-	const TArray<FVector>& Vels = Solver->GetVelocities();
-	const int32 TotalCells = Vels.Num();
-	if (TotalCells == 0) return;
+	// Color per cascade level for bounding box
+	static const FColor CascadeColors[] = { FColor::Cyan, FColor::Green, FColor::Yellow, FColor::Orange };
 
-	// Draw Grid Bounds
-    const FVector GridMin = Solver->GetWorldOrigin();
-    const FVector GridMax = Solver->GetWorldOrigin() + FVector(
-        Solver->GetSizeX() * Solver->GetCellSize(),
-        Solver->GetSizeY() * Solver->GetCellSize(),
-        Solver->GetSizeZ() * Solver->GetCellSize()
-    );
-    const FVector GridCenter = (GridMin + GridMax) * 0.5f;
-    const FVector GridExtent = (GridMax - GridMin) * 0.5f;
-
-    // Use 0.f for lifetime to draw for one frame (since we call this in Tick)
-    DrawDebugBox(GetWorld(), GridCenter, GridExtent, FColor::Cyan, false, 0.f, 0, 5.f);
-    DrawDebugPoint(GetWorld(), Solver->GetWorldOrigin(), 20.f, FColor::Magenta, false, 0.f, 0);
-
-    // Only log once every 60 frames to avoid spamming, or if it changes significantly
-    static int32 LogCounter = 0;
-    if (LogCounter++ % 300 == 0) // approx every 5 seconds at 60fps
-    {
-        UE_LOG(LogWind3D, Log, TEXT("DrawDebugWind: Bounds Min=%s, Max=%s, Center=%s"), 
-            *GridMin.ToString(), *GridMax.ToString(), *GridCenter.ToString());
-    }
-
-	// Iterate over grid cells
-	// Two-layer visualization:
-	//   Layer 1 (thin dark): all cells — shows ambient direction
-	//   Layer 2 (bright colored): cells with speed significantly above ambient — shows motor effect
-    int32 DrawnCount = 0;
-	const float AmbientSpeed = AmbientWind.Size();
-	const float ExcessThreshold = FMath::Max(AmbientSpeed * 0.3f, 30.f); // 30% above ambient
-
-	// Downsample: limit max ~2000 arrows to avoid thousands of draw calls
-	const int32 Step = FMath::Max(1, FMath::CeilToInt(FMath::Pow((float)TotalCells / 2000.f, 1.f / 3.f)));
-
-	for (int32 Z = 0; Z < Solver->GetSizeZ(); Z += Step)
+	auto DrawSolverDebug = [this](const IWindSolver& S, const FColor& BoxColor, float BoxThickness)
 	{
-		for (int32 Y = 0; Y < Solver->GetSizeY(); Y += Step)
+		const TArray<FVector>& Vels = S.GetVelocities();
+		const int32 TotalCells = Vels.Num();
+		if (TotalCells == 0) return;
+
+		const FVector GridMin = S.GetWorldOrigin();
+		const FVector GridMax = GridMin + FVector(
+			S.GetSizeX() * S.GetCellSize(),
+			S.GetSizeY() * S.GetCellSize(),
+			S.GetSizeZ() * S.GetCellSize());
+		const FVector GridCenter = (GridMin + GridMax) * 0.5f;
+		const FVector GridExtent = (GridMax - GridMin) * 0.5f;
+
+		DrawDebugBox(GetWorld(), GridCenter, GridExtent, BoxColor, false, 0.f, 0, BoxThickness);
+		DrawDebugPoint(GetWorld(), S.GetWorldOrigin(), 20.f, FColor::Magenta, false, 0.f, 0);
+
+		const float AmbientSpeed = AmbientWind.Size();
+		const float ExcessThreshold = FMath::Max(AmbientSpeed * 0.3f, 30.f);
+		const int32 Step = FMath::Max(1, FMath::CeilToInt(FMath::Pow((float)TotalCells / 2000.f, 1.f / 3.f)));
+
+		for (int32 Z = 0; Z < S.GetSizeZ(); Z += Step)
 		{
-			for (int32 X = 0; X < Solver->GetSizeX(); X += Step)
+			for (int32 Y = 0; Y < S.GetSizeY(); Y += Step)
 			{
-				const int32 Idx = Solver->CellIndex(X, Y, Z);
-				const FVector CellCenter = Solver->CellToWorld(X, Y, Z);
-
-				// Solid cells: red dot
-				if (Solver->IsSolid(X, Y, Z))
+				for (int32 X = 0; X < S.GetSizeX(); X += Step)
 				{
-					DrawDebugPoint(GetWorld(), CellCenter, 8.f, FColor::Red, false, 0.f, 0);
-					continue;
-				}
+					const int32 Idx = S.CellIndex(X, Y, Z);
+					const FVector CellCenter = S.CellToWorld(X, Y, Z);
 
-				// Grid structure dot
-				DrawDebugPoint(GetWorld(), CellCenter, 4.f, FColor(40, 40, 40), false, 0.f, 0);
+					if (S.IsSolid(X, Y, Z))
+					{
+						DrawDebugPoint(GetWorld(), CellCenter, 8.f, FColor::Red, false, 0.f, 0);
+						continue;
+					}
 
-				const FVector& Velocity = Vels[Idx];
-				const float Speed = Velocity.Size();
-				if (Speed < 1.f) continue;
+					DrawDebugPoint(GetWorld(), CellCenter, 4.f, FColor(40, 40, 40), false, 0.f, 0);
 
-				const FVector VelNorm = Velocity.GetSafeNormal();
+					const FVector& Velocity = Vels[Idx];
+					const float Speed = Velocity.Size();
+					if (Speed < 1.f) continue;
 
-				// Layer 1: thin dark arrow showing absolute direction
-				const float BaseLen = Solver->GetCellSize() * 0.3f;
-				DrawDebugDirectionalArrow(GetWorld(), CellCenter,
-					CellCenter + VelNorm * BaseLen,
-					15.f, FColor(50, 80, 50), false, 0.f, 0, 1.5f);
-
-				// Layer 2: bright arrow for cells deviating from ambient (vector difference).
-				// |V - AmbientWind| catches perpendicular motor effects that |V|-|Ambient| misses.
-				const float DeviationSpeed = (Velocity - AmbientWind).Size();
-				if (DeviationSpeed > ExcessThreshold)
-				{
-					// Length scales with deviation, capped at 90% cell size
-					const float ArrowLen = FMath::Clamp(DeviationSpeed * 0.25f, 20.f, Solver->GetCellSize() * 0.9f);
-
-					FColor Color = FColor::Cyan;
-					if (DeviationSpeed > 200.f) Color = FColor::Yellow;
-					if (DeviationSpeed > 500.f) Color = FColor(255, 140, 0); // Orange
-					if (DeviationSpeed > 900.f) Color = FColor::Red;
-
+					const FVector VelNorm = Velocity.GetSafeNormal();
+					const float BaseLen = S.GetCellSize() * 0.3f;
 					DrawDebugDirectionalArrow(GetWorld(), CellCenter,
-						CellCenter + VelNorm * ArrowLen,
-						50.f, Color, false, 0.f, 0, 5.f);
-					DrawnCount++;
+						CellCenter + VelNorm * BaseLen,
+						15.f, FColor(50, 80, 50), false, 0.f, 0, 1.5f);
+
+					const float DeviationSpeed = (Velocity - AmbientWind).Size();
+					if (DeviationSpeed > ExcessThreshold)
+					{
+						const float ArrowLen = FMath::Clamp(DeviationSpeed * 0.25f, 20.f, S.GetCellSize() * 0.9f);
+
+						FColor Color = FColor::Cyan;
+						if (DeviationSpeed > 200.f) Color = FColor::Yellow;
+						if (DeviationSpeed > 500.f) Color = FColor(255, 140, 0);
+						if (DeviationSpeed > 900.f) Color = FColor::Red;
+
+						DrawDebugDirectionalArrow(GetWorld(), CellCenter,
+							CellCenter + VelNorm * ArrowLen,
+							50.f, Color, false, 0.f, 0, 5.f);
+					}
 				}
 			}
 		}
+	};
+
+	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		for (int32 i = 0; i < Cascade->GetNumLevels(); i++)
+		{
+			const FColor& BoxCol = CascadeColors[FMath::Min(i, 3)];
+			DrawSolverDebug(*Cascade->GetLevel(i).Solver, BoxCol, 5.f - i * 1.f);
+		}
+	}
+	else
+	{
+		DrawSolverDebug(*Solver, FColor::Cyan, 5.f);
 	}
 
-    if (LogCounter % 300 == 0)
-    {
-        UE_LOG(LogWind3D, Verbose, TEXT("DrawDebugWind: %d motor-affected cells (ambient=%.0f cm/s, threshold=%.0f)"),
-            DrawnCount, AmbientSpeed, AmbientSpeed + ExcessThreshold);
-    }
+	static int32 LogCounter = 0;
+	if (LogCounter++ % 300 == 0)
+	{
+		const FVector GridMin = GetSolver().GetWorldOrigin();
+		const FVector GridMax = GridMin + FVector(
+			GetSolver().GetSizeX() * GetSolver().GetCellSize(),
+			GetSolver().GetSizeY() * GetSolver().GetCellSize(),
+			GetSolver().GetSizeZ() * GetSolver().GetCellSize());
+		UE_LOG(LogWind3D, Log, TEXT("DrawDebugWind: Primary bounds Min=%s, Max=%s, Cascade=%d"),
+			*GridMin.ToString(), *GridMax.ToString(),
+			bUseCascade && Cascade.IsValid() ? Cascade->GetNumLevels() : 0);
+	}
 }
 
 // --- Audio Integration ---
 
 float UWindSubsystem::GetWindIntensityAtPosition(FVector WorldPosition) const
 {
-	return FMath::Clamp(Solver->SampleVelocityAt(WorldPosition).Size() / FWindTextureManager::MaxWindSpeed, 0.f, 1.f);
+	FVector Vel;
+	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		Vel = Cascade->SampleVelocityAt(WorldPosition);
+	}
+	else
+	{
+		Vel = Solver->SampleVelocityAt(WorldPosition);
+	}
+	return FMath::Clamp(Vel.Size() / FWindTextureManager::MaxWindSpeed, 0.f, 1.f);
 }
 
 float UWindSubsystem::GetWindTurbulenceAtPosition(FVector WorldPosition) const
 {
+	if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
+	{
+		return Cascade->SampleTurbulenceAt(WorldPosition);
+	}
 	return Solver->SampleTurbulenceAt(WorldPosition);
 }
 
