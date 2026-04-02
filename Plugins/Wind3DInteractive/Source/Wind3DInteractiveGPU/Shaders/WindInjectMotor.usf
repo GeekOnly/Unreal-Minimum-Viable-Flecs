@@ -173,15 +173,31 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
             }
         }
 
-        float3 Contrib = Force * InjectionFactor * Motor.ImpulseScale;
-        Accumulated.xyz += Contrib;
+        float3 MotorTarget = Force * InjectionFactor * Motor.ImpulseScale;
+        float MotorTargetMag = length(MotorTarget);
+        float CurrentMag = length(Accumulated.xyz);
+
+        // Sustained velocity blend — match CPU WindGridCPU.cpp logic.
+        // Lerp toward motor target based on squared falloff so cells near
+        // motor center fully adopt motor velocity, preventing oscillation.
+        float BlendAlpha = Falloff * Falloff;
+
+        if (MotorTargetMag > CurrentMag)
+        {
+            Accumulated.xyz = lerp(Accumulated.xyz, MotorTarget, BlendAlpha);
+        }
+        else
+        {
+            Accumulated.xyz += MotorTarget * BlendAlpha * 0.3;
+        }
 
         // Turbulence in alpha
         Accumulated.w = clamp(Accumulated.w + Falloff * 0.1 * DeltaTime, 0.0, 1.0);
     }
 
-    // Clamp velocity — MaxSpeed passed from CPU (matching CPU: max(Strength) * 2.0)
-    if (dot(Accumulated.xyz, Accumulated.xyz) > MaxSpeed * MaxSpeed)
+    // Clamp velocity — MaxSpeed passed from CPU (matching CPU: max(Strength) * 3.0)
+    float MaxSpeedSq = MaxSpeed * MaxSpeed;
+    if (dot(Accumulated.xyz, Accumulated.xyz) > MaxSpeedSq)
     {
         Accumulated.xyz = normalize(Accumulated.xyz) * MaxSpeed;
     }

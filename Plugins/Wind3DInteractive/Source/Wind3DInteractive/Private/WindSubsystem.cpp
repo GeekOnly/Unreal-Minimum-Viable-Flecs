@@ -240,31 +240,38 @@ void UWindSubsystem::RegisterSystems()
 
 			if (Preset == 1) // Natural
 			{
-				AttackScale = 0.65f;
-				ReleaseScale = 1.35f;
-				LeanScale = 0.95f;
+				AttackScale = 0.5f;
+				ReleaseScale = 1.5f;
+				LeanScale = 1.2f;
 			}
 			else if (Preset == 2) // Storm
 			{
-				AttackScale = 2.2f;
-				ReleaseScale = 0.45f;
-				LeanScale = 1.55f;
+				AttackScale = 1.8f;
+				ReleaseScale = 0.35f;
+				LeanScale = 1.8f;
 			}
 
 			for (auto I : It)
 			{
-				// Drive foliage toward a bend target from wind speed (attack/release),
-				// which creates sustained leaning instead of springy jitter.
+				// Drive foliage toward a sustained bend target based on wind speed.
+				// Uses attack/release smoothing so foliage leans progressively into
+				// the wind rather than twitching from frame-to-frame fluctuations.
 				const float WindSpeed = WindAt[I].Velocity.Size();
-				const float WindNorm = FMath::Clamp(WindSpeed / FWindTextureManager::MaxWindSpeed, 0.f, 1.f);
+				
+				// Normalize against a reference speed tuned for the motor's typical
+				// strength range (500-1000), not the full MaxWindSpeed (2000).
+				// This gives motors meaningful bend authority over foliage.
+				const float EffectiveMaxSpeed = FMath::Min(FWindTextureManager::MaxWindSpeed, 1000.f);
+				const float WindNorm = FMath::Clamp(WindSpeed / EffectiveMaxSpeed, 0.f, 1.f);
 
-				const float DynamicLean = FMath::Lerp(1.f, 1.25f, WindNorm) * LeanScale;
-				const float TargetBend = FMath::Pow(WindNorm, 0.65f) * Recv[I].Sensitivity * 1.1f * DynamicLean;
-				const float MaxBend = FMath::Max(Recv[I].Sensitivity * 1.8f * LeanScale, 0.2f);
+				const float DynamicLean = FMath::Lerp(1.f, 1.5f, WindNorm) * LeanScale;
+				const float TargetBend = FMath::Pow(WindNorm, 0.5f) * Recv[I].Sensitivity * 1.4f * DynamicLean;
+				const float MaxBend = FMath::Max(Recv[I].Sensitivity * 2.2f * LeanScale, 0.3f);
 				const float ClampedTarget = FMath::Clamp(TargetBend, 0.f, MaxBend);
 
-				const float AttackRate = FMath::Max(Recv[I].StiffnessK * 0.9f * AttackScale, 0.25f);
-				const float ReleaseRate = FMath::Max(Recv[I].DampingC * 0.8f * ReleaseScale, 0.2f);
+				// Slow attack gives a gradual lean-in; faster release for natural spring-back
+				const float AttackRate = FMath::Max(Recv[I].StiffnessK * 0.35f * AttackScale, 0.15f);
+				const float ReleaseRate = FMath::Max(Recv[I].DampingC * 1.2f * ReleaseScale, 0.3f);
 				const float BlendRate = (ClampedTarget >= Recv[I].DisplacementCurrent) ? AttackRate : ReleaseRate;
 				const float Alpha = 1.f - FMath::Exp(-BlendRate * DT);
 

@@ -400,10 +400,31 @@ void FWindGridCPU::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 				const int32 Idx = CellIndex(X, Y, Z);
 				if (Solids[Idx]) continue;
 
-				Velocities[Idx] += Force * InjectionFactor * Motor.ImpulseScale;
+				// Sustained velocity blend: motor defines a target velocity for cells
+				// inside its volume. We lerp toward the motor's target based on falloff
+				// rather than adding force. This prevents oscillation between injection
+				// and decay, giving foliage a steady lean instead of twitching.
+				const FVector MotorTarget = Force * InjectionFactor * Motor.ImpulseScale;
+				const float MotorTargetMag = MotorTarget.Size();
+				const float CurrentMag = Velocities[Idx].Size();
+
+				// Use falloff as blend authority — cells near motor center fully adopt
+				// motor velocity; cells at edges blend with existing flow.
+				const float BlendAlpha = Falloff * Falloff; // squared for sharper authority near center
+				
+				if (MotorTargetMag > CurrentMag)
+				{
+					// Motor is stronger — lerp toward motor target
+					Velocities[Idx] = FMath::Lerp(Velocities[Idx], MotorTarget, BlendAlpha);
+				}
+				else
+				{
+					// Existing velocity is already strong — add a gentle push in motor direction
+					Velocities[Idx] += MotorTarget * BlendAlpha * 0.3f;
+				}
 
 				// Clamp velocity magnitude
-				const float MaxSpeed = Motor.Strength * 2.f;
+				const float MaxSpeed = Motor.Strength * 3.f;
 				if (Velocities[Idx].SizeSquared() > MaxSpeed * MaxSpeed)
 				{
 					Velocities[Idx] = Velocities[Idx].GetSafeNormal() * MaxSpeed;
