@@ -81,7 +81,14 @@ public:
 		float Stiffness = 10.f,
 		float Damping = 2.f,
 		int32 CPDSlotDisplace = 0,
-		int32 CPDSlotTurbulence = 1);
+		int32 CPDSlotTurbulence = 1,
+		float Mass = 1.f,
+		float SpringConstant = 35.f,
+		float DampingCoefficient = 12.f,
+		float MaxVelocity = 4.f,
+		float MaxAcceleration = 40.f,
+		float RestDisplacement = 0.f,
+		float WindFilterAlpha = 0.25f);
 
 	UFUNCTION(BlueprintCallable, Category = "Wind3D")
 	FVector QueryWindAtPosition(FVector WorldPosition) const;

@@ -5,6 +5,8 @@
 #include "WindFieldSetupActor.generated.h"
 
 class UBoxComponent;
+class UHierarchicalInstancedStaticMeshComponent;
+class UWindSubsystem;
 
 /**
  * Drag-and-drop actor to setup the Wind Grid volume and visualize it.
@@ -128,6 +130,74 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind Grid")
 	TSoftObjectPtr<AActor> CenterActor;
 
+	// --- Foliage Auto Registration ---
+
+	/** Automatically register HISM foliage instances into WindSubsystem on BeginPlay. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register")
+	bool bAutoRegisterFoliage = true;
+
+	/** Optional source actors. Empty = scan all actors in world for HISM components. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (EditCondition = "bAutoRegisterFoliage"))
+	TArray<TSoftObjectPtr<AActor>> FoliageSourceActors;
+
+	/** Register only static HISM components. Recommended for painted foliage. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (EditCondition = "bAutoRegisterFoliage"))
+	bool bRegisterStaticOnly = true;
+
+	/** Optional component tag filter. None = include all HISM components. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (EditCondition = "bAutoRegisterFoliage"))
+	FName RequiredFoliageComponentTag = NAME_None;
+
+	/** Only register instances within this radius from setup actor. 0 = unlimited. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (ClampMin = "0.0", EditCondition = "bAutoRegisterFoliage"))
+	float AutoRegisterRadius = 0.f;
+
+	/** Hard cap to avoid expensive accidental full-map registration. 0 = unlimited. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (ClampMin = "0", EditCondition = "bAutoRegisterFoliage"))
+	int32 MaxAutoRegisterInstances = 30000;
+
+	/** Custom primitive data slot for displacement output. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|CPD", meta = (ClampMin = "0", EditCondition = "bAutoRegisterFoliage"))
+	int32 FoliageCPDSlotDisplace = 0;
+
+	/** Custom primitive data slot for turbulence output. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|CPD", meta = (ClampMin = "0", EditCondition = "bAutoRegisterFoliage"))
+	int32 FoliageCPDSlotTurbulence = 1;
+
+	// --- Foliage Physics Defaults ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.0", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageSensitivity = 1.f;
+
+	/** Legacy stiffness multiplier retained for existing authored behavior. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.01", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageStiffness = 10.f;
+
+	/** Legacy damping multiplier retained for existing authored behavior. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.01", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageDamping = 2.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.05", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageMass = 1.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.1", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageSpringConstant = 35.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.0", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageDampingCoefficient = 12.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.05", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageMaxVelocity = 4.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.1", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageMaxAcceleration = 40.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.0", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageRestDisplacement = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Physics Defaults", meta = (ClampMin = "0.01", ClampMax = "1.0", EditCondition = "bAutoRegisterFoliage"))
+	float FoliageWindFilterAlpha = 0.25f;
+
 protected:
 	virtual void BeginPlay() override;
     virtual void OnConstruction(const FTransform& Transform) override;
@@ -137,4 +207,7 @@ protected:
 
 private:
     void UpdatePreviewBox();
+	void AutoRegisterFoliage(UWindSubsystem* WindSys);
+	bool ShouldRegisterFoliageComponent(const UHierarchicalInstancedStaticMeshComponent* HISM) const;
+	bool IsInsideRegistrationRadius(const FVector& WorldLocation) const;
 };

@@ -46,31 +46,31 @@ static TAutoConsoleVariable<int32> CVarUseGPUWind(
 static TAutoConsoleVariable<int32> CVarFoliagePreset(
 	TEXT("Wind3D.FoliagePreset"),
 	1,
-	TEXT("Foliage bend response preset.\n")
-	TEXT("0: Custom (use Wind3D.FoliageAttackScale / ReleaseScale / LeanScale)\n")
-	TEXT("1: Natural (lean slower, recover faster)\n")
-	TEXT("2: Storm (lean faster, recover slower)"),
+	TEXT("Foliage spring preset.\n")
+	TEXT("0: Custom (use Wind3D.FoliageAttackScale / ReleaseScale / LeanScale as spring/damping/force scales)\n")
+	TEXT("1: Natural (stable, smooth leaning)\n")
+	TEXT("2: Storm (stronger force, faster spring)"),
 	ECVF_Default
 );
 
 static TAutoConsoleVariable<float> CVarFoliageAttackScale(
 	TEXT("Wind3D.FoliageAttackScale"),
 	1.0f,
-	TEXT("Runtime scale for foliage lean-in speed (attack). Used directly when Wind3D.FoliagePreset=0."),
+	TEXT("Runtime spring stiffness scale for foliage. Used directly when Wind3D.FoliagePreset=0."),
 	ECVF_Default
 );
 
 static TAutoConsoleVariable<float> CVarFoliageReleaseScale(
 	TEXT("Wind3D.FoliageReleaseScale"),
 	1.0f,
-	TEXT("Runtime scale for foliage recover speed (release). Used directly when Wind3D.FoliagePreset=0."),
+	TEXT("Runtime damping scale for foliage. Used directly when Wind3D.FoliagePreset=0."),
 	ECVF_Default
 );
 
 static TAutoConsoleVariable<float> CVarFoliageLeanScale(
 	TEXT("Wind3D.FoliageLeanScale"),
 	1.0f,
-	TEXT("Runtime scale for foliage lean amount. Used directly when Wind3D.FoliagePreset=0."),
+	TEXT("Runtime wind-force scale for foliage. Used directly when Wind3D.FoliagePreset=0."),
 	ECVF_Default
 );
 
@@ -234,52 +234,74 @@ void UWindSubsystem::RegisterSystems()
 			const float DT = It.delta_time();
 
 			const int32 Preset = CVarFoliagePreset.GetValueOnGameThread();
-			float AttackScale = FMath::Max(CVarFoliageAttackScale.GetValueOnGameThread(), 0.05f);
-			float ReleaseScale = FMath::Max(CVarFoliageReleaseScale.GetValueOnGameThread(), 0.05f);
-			float LeanScale = FMath::Max(CVarFoliageLeanScale.GetValueOnGameThread(), 0.05f);
+			float SpringScale = FMath::Max(CVarFoliageAttackScale.GetValueOnGameThread(), 0.05f);
+			float DampingScale = FMath::Max(CVarFoliageReleaseScale.GetValueOnGameThread(), 0.05f);
+			float ForceScale = FMath::Max(CVarFoliageLeanScale.GetValueOnGameThread(), 0.05f);
 
 			if (Preset == 1) // Natural
 			{
-				AttackScale = 0.5f;
-				ReleaseScale = 1.5f;
-				LeanScale = 1.2f;
+				SpringScale = 0.75f;
+				DampingScale = 1.35f;
+				ForceScale = 1.25f;
 			}
 			else if (Preset == 2) // Storm
 			{
-				AttackScale = 1.8f;
-				ReleaseScale = 0.35f;
-				LeanScale = 1.8f;
+				SpringScale = 1.7f;
+				DampingScale = 0.9f;
+				ForceScale = 1.9f;
 			}
 
 			for (auto I : It)
 			{
-				// Drive foliage toward a sustained bend target based on wind speed.
-				// Uses attack/release smoothing so foliage leans progressively into
-				// the wind rather than twitching from frame-to-frame fluctuations.
-				const float WindSpeed = WindAt[I].Velocity.Size();
-				
-				// Normalize against a reference speed tuned for the motor's typical
-				// strength range (500-1000), not the full MaxWindSpeed (2000).
-				// This gives motors meaningful bend authority over foliage.
+				// Smooth sampled wind speed to suppress sub-cell jitter before applying force.
+				const float RawWindSpeed = WindAt[I].Velocity.Size();
+				const float StableFilterAlpha = FMath::Clamp(Recv[I].WindFilterAlpha, 0.01f, 0.99f);
+				const float DtAwareFilter = 1.f - FMath::Pow(1.f - StableFilterAlpha, DT * 60.f);
+				Recv[I].FilteredWindSpeed = FMath::Lerp(Recv[I].FilteredWindSpeed, RawWindSpeed, DtAwareFilter);
+
 				const float EffectiveMaxSpeed = FMath::Min(FWindTextureManager::MaxWindSpeed, 1000.f);
-				const float WindNorm = FMath::Clamp(WindSpeed / EffectiveMaxSpeed, 0.f, 1.f);
+				const float WindNorm = FMath::Clamp(Recv[I].FilteredWindSpeed / EffectiveMaxSpeed, 0.f, 1.f);
 
-				const float DynamicLean = FMath::Lerp(1.f, 1.5f, WindNorm) * LeanScale;
-				const float TargetBend = FMath::Pow(WindNorm, 0.5f) * Recv[I].Sensitivity * 1.4f * DynamicLean;
-				const float MaxBend = FMath::Max(Recv[I].Sensitivity * 2.2f * LeanScale, 0.3f);
-				const float ClampedTarget = FMath::Clamp(TargetBend, 0.f, MaxBend);
+				// Use legacy per-instance stiffness/damping as artist multipliers on top of
+				// physically-based spring constants to preserve existing authored variance.
+				const float LegacyStiffnessScale = FMath::Max(Recv[I].StiffnessK / 10.f, 0.25f);
+				const float LegacyDampingScale = FMath::Max(Recv[I].DampingC / 2.f, 0.25f);
 
-				// Slow attack gives a gradual lean-in; faster release for natural spring-back
-				const float AttackRate = FMath::Max(Recv[I].StiffnessK * 0.35f * AttackScale, 0.15f);
-				const float ReleaseRate = FMath::Max(Recv[I].DampingC * 1.2f * ReleaseScale, 0.3f);
-				const float BlendRate = (ClampedTarget >= Recv[I].DisplacementCurrent) ? AttackRate : ReleaseRate;
-				const float Alpha = 1.f - FMath::Exp(-BlendRate * DT);
+				const float Mass = FMath::Max(Recv[I].Mass, 0.05f);
+				const float SpringK = FMath::Max(Recv[I].SpringConstant * SpringScale * LegacyStiffnessScale, 0.1f);
+				const float DampingCoeff = FMath::Max(Recv[I].DampingCoefficient * DampingScale * LegacyDampingScale, 0.f);
 
-				const float PrevDisplacement = Recv[I].DisplacementCurrent;
-				Recv[I].DisplacementCurrent = FMath::Lerp(Recv[I].DisplacementCurrent, ClampedTarget, Alpha);
-				Recv[I].DisplacementVelocity = (DT > SMALL_NUMBER)
-					? (Recv[I].DisplacementCurrent - PrevDisplacement) / DT
-					: 0.f;
+				const float WindForce = FMath::Pow(WindNorm, 0.55f) * Recv[I].Sensitivity * 55.f * ForceScale;
+				const float SpringForce = -SpringK * (Recv[I].DisplacementCurrent - Recv[I].RestDisplacement);
+				const float DampingForce = -DampingCoeff * Recv[I].DisplacementVelocity;
+				float Acceleration = (WindForce + SpringForce + DampingForce) / Mass;
+
+				const float MaxAccel = FMath::Max(Recv[I].MaxAcceleration, 0.1f);
+				Acceleration = FMath::Clamp(Acceleration, -MaxAccel, MaxAccel);
+
+				Recv[I].DisplacementVelocity += Acceleration * DT;
+				const float MaxVel = FMath::Max(Recv[I].MaxVelocity, 0.05f);
+				Recv[I].DisplacementVelocity = FMath::Clamp(Recv[I].DisplacementVelocity, -MaxVel, MaxVel);
+
+				Recv[I].DisplacementCurrent += Recv[I].DisplacementVelocity * DT;
+
+				const float MaxBend = FMath::Max(Recv[I].Sensitivity * 2.8f * ForceScale, 0.35f);
+				if (Recv[I].DisplacementCurrent <= 0.f)
+				{
+					Recv[I].DisplacementCurrent = 0.f;
+					if (Recv[I].DisplacementVelocity < 0.f)
+					{
+						Recv[I].DisplacementVelocity = 0.f;
+					}
+				}
+				else if (Recv[I].DisplacementCurrent >= MaxBend)
+				{
+					Recv[I].DisplacementCurrent = MaxBend;
+					if (Recv[I].DisplacementVelocity > 0.f)
+					{
+						Recv[I].DisplacementVelocity *= 0.25f;
+					}
+				}
 
 				const float OutputDisplacement = Recv[I].DisplacementCurrent;
 				const float OutputTurbulence = WindAt[I].Turbulence * FMath::Lerp(1.f, 0.35f, WindNorm);
@@ -817,13 +839,35 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 	float Stiffness,
 	float Damping,
 	int32 CPDSlotDisplace,
-	int32 CPDSlotTurbulence)
+	int32 CPDSlotTurbulence,
+	float Mass,
+	float SpringConstant,
+	float DampingCoefficient,
+	float MaxVelocity,
+	float MaxAcceleration,
+	float RestDisplacement,
+	float WindFilterAlpha)
 {
 	if (!ECSWorld || !HISM) return FWindEntityHandle();
 
+	FWindReceiver Receiver;
+	Receiver.Sensitivity = Sensitivity;
+	Receiver.DisplacementCurrent = 0.f;
+	Receiver.DisplacementVelocity = 0.f;
+	Receiver.StiffnessK = Stiffness;
+	Receiver.DampingC = Damping;
+	Receiver.Mass = Mass;
+	Receiver.SpringConstant = SpringConstant;
+	Receiver.DampingCoefficient = DampingCoefficient;
+	Receiver.MaxVelocity = MaxVelocity;
+	Receiver.MaxAcceleration = MaxAcceleration;
+	Receiver.RestDisplacement = RestDisplacement;
+	Receiver.WindFilterAlpha = FMath::Clamp(WindFilterAlpha, 0.01f, 1.f);
+	Receiver.FilteredWindSpeed = 0.f;
+
 	flecs::entity E = ECSWorld->entity()
 		.set<FFoliageWorldPosition>({WorldLocation})
-		.set<FWindReceiver>({Sensitivity, 0.f, 0.f, Stiffness, Damping})
+		.set<FWindReceiver>(Receiver)
 		.set<FWindVelocityAtEntity>({FVector::ZeroVector, 0.f})
 		.set<FFoliageInstanceData>({HISM, InstanceIndex, CPDSlotDisplace, CPDSlotTurbulence})
 		.add<FFoliageTag>();

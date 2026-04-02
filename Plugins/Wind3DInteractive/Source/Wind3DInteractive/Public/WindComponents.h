@@ -41,6 +41,18 @@ struct FWindReceiver
 	float DisplacementVelocity = 0.f;
 	float StiffnessK = 10.f;
 	float DampingC = 2.f;
+
+	// Mass-spring-damper parameters for physically based foliage leaning.
+	float Mass = 1.f;
+	float SpringConstant = 35.f;
+	float DampingCoefficient = 12.f;
+	float MaxVelocity = 4.f;
+	float MaxAcceleration = 40.f;
+	float RestDisplacement = 0.f;
+
+	// 0..1 smoothing factor for sampled wind speed (reduces grid jitter).
+	float WindFilterAlpha = 0.25f;
+	float FilteredWindSpeed = 0.f;
 };
 
 // Foliage Instance Data — links Flecs entity to HISM slot
