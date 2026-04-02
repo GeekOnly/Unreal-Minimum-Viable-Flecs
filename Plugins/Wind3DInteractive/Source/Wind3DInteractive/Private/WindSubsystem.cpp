@@ -16,6 +16,24 @@ static TAutoConsoleVariable<int32> CVarShowWindDebug(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarShowWindTrailDebug(
+	TEXT("Wind3D.ShowTrailDebug"),
+	1,
+	TEXT("Visualize Moving motor trail segments when Wind3D.ShowDebug is enabled.\n")
+	TEXT("0: Off\n")
+	TEXT("1: On"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarShowWindObstacleNormals(
+	TEXT("Wind3D.ShowObstacleNormals"),
+	1,
+	TEXT("Visualize obstacle normals used for wind deflection when Wind3D.ShowDebug is enabled.\n")
+	TEXT("0: Off\n")
+	TEXT("1: On"),
+	ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<int32> CVarUseGPUWind(
 	TEXT("Wind3D.UseGPU"),
 	0,
@@ -750,10 +768,16 @@ FVector UWindSubsystem::QueryWindAtPosition(FVector WorldPosition) const
 
 void UWindSubsystem::DrawDebugWind()
 {
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	const bool bDrawTrailDebug = CVarShowWindTrailDebug.GetValueOnGameThread() != 0;
+	const bool bDrawObstacleNormals = CVarShowWindObstacleNormals.GetValueOnGameThread() != 0;
+
 	// Color per cascade level for bounding box
 	static const FColor CascadeColors[] = { FColor::Cyan, FColor::Green, FColor::Yellow, FColor::Orange };
 
-	auto DrawSolverDebug = [this](const IWindSolver& S, const FColor& BoxColor, float BoxThickness)
+	auto DrawSolverDebug = [this, World, bDrawObstacleNormals](const IWindSolver& S, const FColor& BoxColor, float BoxThickness)
 	{
 		const TArray<FVector>& Vels = S.GetVelocities();
 		const int32 TotalCells = Vels.Num();
@@ -774,6 +798,11 @@ void UWindSubsystem::DrawDebugWind()
 		const float ExcessThreshold = FMath::Max(AmbientSpeed * 0.3f, 30.f);
 		const int32 Step = FMath::Max(1, FMath::CeilToInt(FMath::Pow((float)TotalCells / 2000.f, 1.f / 3.f)));
 
+		const auto IsSolidSafe = [&S](int32 X, int32 Y, int32 Z) -> bool
+		{
+			return S.IsInBounds(X, Y, Z) && S.IsSolid(X, Y, Z);
+		};
+
 		for (int32 Z = 0; Z < S.GetSizeZ(); Z += Step)
 		{
 			for (int32 Y = 0; Y < S.GetSizeY(); Y += Step)
@@ -790,6 +819,24 @@ void UWindSubsystem::DrawDebugWind()
 					}
 
 					DrawDebugPoint(GetWorld(), CellCenter, 4.f, FColor(40, 40, 40), false, 0.f, 0);
+
+					if (bDrawObstacleNormals)
+					{
+						const FVector SolidNormal(
+							(IsSolidSafe(X - 1, Y, Z) ? 1.f : 0.f) - (IsSolidSafe(X + 1, Y, Z) ? 1.f : 0.f),
+							(IsSolidSafe(X, Y - 1, Z) ? 1.f : 0.f) - (IsSolidSafe(X, Y + 1, Z) ? 1.f : 0.f),
+							(IsSolidSafe(X, Y, Z - 1) ? 1.f : 0.f) - (IsSolidSafe(X, Y, Z + 1) ? 1.f : 0.f)
+						);
+
+						if (!SolidNormal.IsNearlyZero())
+						{
+							const FVector N = SolidNormal.GetSafeNormal();
+							const float NormalLen = S.GetCellSize() * 0.35f;
+							DrawDebugDirectionalArrow(World, CellCenter,
+								CellCenter + N * NormalLen,
+								14.f, FColor(255, 120, 0), false, 0.f, 0, 2.5f);
+						}
+					}
 
 					const FVector& Velocity = Vels[Idx];
 					const float Speed = Velocity.Size();
@@ -831,6 +878,36 @@ void UWindSubsystem::DrawDebugWind()
 	else
 	{
 		DrawSolverDebug(*Solver, FColor::Cyan, 5.f);
+	}
+
+	if (bDrawTrailDebug && ECSWorld)
+	{
+		ECSWorld->each<FWindMotorData>([World](const FWindMotorData& Motor)
+		{
+			if (!Motor.bEnabled) return;
+
+			const EWindEmissionType EmissionType = static_cast<EWindEmissionType>(Motor.EmissionType);
+			if (EmissionType != EWindEmissionType::Moving) return;
+
+			const FVector MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
+			const float MoveDistance = MoveDelta.Size();
+			const FVector MoveDir = MoveDistance > SMALL_NUMBER
+				? MoveDelta / MoveDistance
+				: (Motor.Direction.IsNearlyZero() ? FVector::ForwardVector : Motor.Direction.GetSafeNormal());
+			const float TrailLength = FMath::Max(Motor.MoveLength, MoveDistance);
+			const FVector TrailEnd = Motor.WorldPosition;
+			const FVector TrailStart = TrailEnd - MoveDir * TrailLength;
+
+			DrawDebugLine(World, TrailStart, TrailEnd, FColor(170, 0, 255), false, 0.f, 0, 4.f);
+
+			const float MarkerRadius = FMath::Clamp(Motor.Radius * 0.1f, 8.f, 60.f);
+			DrawDebugSphere(World, TrailStart, MarkerRadius, 10, FColor::Purple, false, 0.f, 0, 1.5f);
+			DrawDebugSphere(World, TrailEnd, MarkerRadius, 10, FColor::Cyan, false, 0.f, 0, 1.5f);
+
+			DrawDebugDirectionalArrow(World, TrailEnd,
+				TrailEnd + MoveDir * FMath::Max(Motor.Radius * 0.75f, 20.f),
+				18.f, FColor::Cyan, false, 0.f, 0, 2.5f);
+		});
 	}
 
 	static int32 LogCounter = 0;
