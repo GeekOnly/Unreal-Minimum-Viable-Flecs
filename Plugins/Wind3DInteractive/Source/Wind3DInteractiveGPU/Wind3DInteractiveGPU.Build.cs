@@ -1,4 +1,5 @@
 using UnrealBuildTool;
+using System.IO;
 
 public class Wind3DInteractiveGPU : ModuleRules
 {
@@ -21,14 +22,7 @@ public class Wind3DInteractiveGPU : ModuleRules
 			"Projects"              // For shader directory mapping
 		});
 
-		PublicIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractiveGPU/Public"
-		});
-
-		PrivateIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractiveGPU/Private"
-		});
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Public"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
 	}
 }

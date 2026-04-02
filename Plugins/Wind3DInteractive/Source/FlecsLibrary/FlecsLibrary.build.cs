@@ -1,4 +1,5 @@
 using UnrealBuildTool;
+using System.IO;
 
 public class FlecsLibrary : ModuleRules
 {
@@ -8,10 +9,8 @@ public class FlecsLibrary : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core" });
 
-		//The path for the header files
-		PublicIncludePaths.AddRange(new string[] {"FlecsLibrary/Public"});
-		//The path for the source files
-		PrivateIncludePaths.AddRange(new string[] {"FlecsLibrary/Private"});
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Public"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
 
 		if (Target.Platform != UnrealTargetPlatform.Win64)
 			AppendStringToPublicDefinition("flecs_EXPORTS", "0");

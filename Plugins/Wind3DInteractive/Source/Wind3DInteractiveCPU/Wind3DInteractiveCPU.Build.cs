@@ -1,4 +1,5 @@
 using UnrealBuildTool;
+using System.IO;
 
 public class Wind3DInteractiveCPU : ModuleRules
 {
@@ -13,14 +14,7 @@ public class Wind3DInteractiveCPU : ModuleRules
 			"Wind3DInteractive"     // IWindSolver, WindComponents, WindTypes
 		});
 
-		PublicIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractiveCPU/Public"
-		});
-
-		PrivateIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractiveCPU/Private"
-		});
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Public"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
 	}
 }

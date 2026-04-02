@@ -1,4 +1,5 @@
 using UnrealBuildTool;
+using System.IO;
 
 public class Wind3DInteractiveEditor : ModuleRules
 {
@@ -25,14 +26,7 @@ public class Wind3DInteractiveEditor : ModuleRules
 			"FlecsLibrary"
 		});
 
-		PublicIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractiveEditor/Public"
-		});
-
-		PrivateIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractiveEditor/Private"
-		});
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Public"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
 	}
 }

@@ -1,4 +1,5 @@
 using UnrealBuildTool;
+using System.IO;
 
 public class Wind3DInteractive : ModuleRules
 {
@@ -22,15 +23,8 @@ public class Wind3DInteractive : ModuleRules
 			"NiagaraCore"
 		});
 
-		PublicIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractive/Public"
-		});
-
-		PrivateIncludePaths.AddRange(new string[]
-		{
-			"Wind3DInteractive/Private",
-			"Wind3DInteractive/Private/Systems"
-		});
+		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Public"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private", "Systems"));
 	}
 }

@@ -43,6 +43,37 @@ static TAutoConsoleVariable<int32> CVarUseGPUWind(
 	ECVF_Default
 );
 
+static TAutoConsoleVariable<int32> CVarFoliagePreset(
+	TEXT("Wind3D.FoliagePreset"),
+	1,
+	TEXT("Foliage bend response preset.\n")
+	TEXT("0: Custom (use Wind3D.FoliageAttackScale / ReleaseScale / LeanScale)\n")
+	TEXT("1: Natural (lean slower, recover faster)\n")
+	TEXT("2: Storm (lean faster, recover slower)"),
+	ECVF_Default
+);
+
+static TAutoConsoleVariable<float> CVarFoliageAttackScale(
+	TEXT("Wind3D.FoliageAttackScale"),
+	1.0f,
+	TEXT("Runtime scale for foliage lean-in speed (attack). Used directly when Wind3D.FoliagePreset=0."),
+	ECVF_Default
+);
+
+static TAutoConsoleVariable<float> CVarFoliageReleaseScale(
+	TEXT("Wind3D.FoliageReleaseScale"),
+	1.0f,
+	TEXT("Runtime scale for foliage recover speed (release). Used directly when Wind3D.FoliagePreset=0."),
+	ECVF_Default
+);
+
+static TAutoConsoleVariable<float> CVarFoliageLeanScale(
+	TEXT("Wind3D.FoliageLeanScale"),
+	1.0f,
+	TEXT("Runtime scale for foliage lean amount. Used directly when Wind3D.FoliagePreset=0."),
+	ECVF_Default
+);
+
 // ---- Helper: create solver based on current CVar ----
 static TUniquePtr<IWindSolver> CreateSolver()
 {
@@ -201,20 +232,56 @@ void UWindSubsystem::RegisterSystems()
 		.iter([this](flecs::iter& It, FWindReceiver* Recv, const FWindVelocityAtEntity* WindAt, const FFoliageInstanceData* Foliage)
 		{
 			const float DT = It.delta_time();
+
+			const int32 Preset = CVarFoliagePreset.GetValueOnGameThread();
+			float AttackScale = FMath::Max(CVarFoliageAttackScale.GetValueOnGameThread(), 0.05f);
+			float ReleaseScale = FMath::Max(CVarFoliageReleaseScale.GetValueOnGameThread(), 0.05f);
+			float LeanScale = FMath::Max(CVarFoliageLeanScale.GetValueOnGameThread(), 0.05f);
+
+			if (Preset == 1) // Natural
+			{
+				AttackScale = 0.65f;
+				ReleaseScale = 1.35f;
+				LeanScale = 0.95f;
+			}
+			else if (Preset == 2) // Storm
+			{
+				AttackScale = 2.2f;
+				ReleaseScale = 0.45f;
+				LeanScale = 1.55f;
+			}
+
 			for (auto I : It)
 			{
-				const float WindForce = WindAt[I].Velocity.Size() * Recv[I].Sensitivity * 0.001f;
-				const float SpringForce = -Recv[I].StiffnessK * Recv[I].DisplacementCurrent;
-				const float DampForce = -Recv[I].DampingC * Recv[I].DisplacementVelocity;
-				const float Accel = WindForce + SpringForce + DampForce;
-				Recv[I].DisplacementVelocity += Accel * DT;
-				Recv[I].DisplacementCurrent += Recv[I].DisplacementVelocity * DT;
+				// Drive foliage toward a bend target from wind speed (attack/release),
+				// which creates sustained leaning instead of springy jitter.
+				const float WindSpeed = WindAt[I].Velocity.Size();
+				const float WindNorm = FMath::Clamp(WindSpeed / FWindTextureManager::MaxWindSpeed, 0.f, 1.f);
+
+				const float DynamicLean = FMath::Lerp(1.f, 1.25f, WindNorm) * LeanScale;
+				const float TargetBend = FMath::Pow(WindNorm, 0.65f) * Recv[I].Sensitivity * 1.1f * DynamicLean;
+				const float MaxBend = FMath::Max(Recv[I].Sensitivity * 1.8f * LeanScale, 0.2f);
+				const float ClampedTarget = FMath::Clamp(TargetBend, 0.f, MaxBend);
+
+				const float AttackRate = FMath::Max(Recv[I].StiffnessK * 0.9f * AttackScale, 0.25f);
+				const float ReleaseRate = FMath::Max(Recv[I].DampingC * 0.8f * ReleaseScale, 0.2f);
+				const float BlendRate = (ClampedTarget >= Recv[I].DisplacementCurrent) ? AttackRate : ReleaseRate;
+				const float Alpha = 1.f - FMath::Exp(-BlendRate * DT);
+
+				const float PrevDisplacement = Recv[I].DisplacementCurrent;
+				Recv[I].DisplacementCurrent = FMath::Lerp(Recv[I].DisplacementCurrent, ClampedTarget, Alpha);
+				Recv[I].DisplacementVelocity = (DT > SMALL_NUMBER)
+					? (Recv[I].DisplacementCurrent - PrevDisplacement) / DT
+					: 0.f;
+
+				const float OutputDisplacement = Recv[I].DisplacementCurrent;
+				const float OutputTurbulence = WindAt[I].Turbulence * FMath::Lerp(1.f, 0.35f, WindNorm);
 
 				auto* HISM = static_cast<UHierarchicalInstancedStaticMeshComponent*>(Foliage[I].HISMComponentPtr);
 				if (HISM && Foliage[I].InstanceIndex >= 0)
 				{
-					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, Recv[I].DisplacementCurrent);
-					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotTurb, WindAt[I].Turbulence);
+					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, OutputDisplacement);
+					HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotTurb, OutputTurbulence);
 					DirtyHISMs.Add(HISM);
 				}
 			}

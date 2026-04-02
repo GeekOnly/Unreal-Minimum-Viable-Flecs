@@ -34,14 +34,18 @@ float3 CalculateFoliageWPO(
 
     float3 WindDir = normalize(Velocity);
     float Flexibility = VertexColor.r * VertexColor.r;
+    float WindNorm = saturate(Speed / 1000.0f);
+    float LeanStrength = smoothstep(0.12f, 1.0f, WindNorm);
 
     float3 MainBend = WindDir * min(Speed, 1000.0f) * GlobalBendScale * Flexibility;
 
     float LocalPhase = dot(WorldPos, float3(0.1, 0.1, 0.1)) + VertexColor.g * 20.0f;
-    float Shiver = sin(Time * DetailFrequency + LocalPhase) * Turbulence * DetailBendScale * Speed;
+    float DetailAtten = lerp(1.0f, 0.25f, LeanStrength);
+    float Shiver = sin(Time * DetailFrequency + LocalPhase) * Turbulence * DetailBendScale * Speed * DetailAtten;
     float3 DetailBend = WindDir * Shiver;
+    float DownBend = -min(Speed, 1000.0f) * 0.05f * Flexibility * LeanStrength;
 
-    return MainBend + DetailBend;
+    return MainBend + DetailBend + float3(0.0f, 0.0f, DownBend);
 }
 
 // ----------------------------------------------------------------
@@ -73,6 +77,8 @@ float3 CalculateFoliageWorldWPO(
     if (Speed < 1.0f) return float3(0, 0, 0);
 
     float3 WindDir = normalize(Velocity);
+    float WindNorm = saturate(Speed / 1000.0f);
+    float LeanStrength = smoothstep(0.12f, 1.0f, WindNorm);
 
     // 2. Main bending — VertexColor.R masks flexibility (squared for artist control)
     float Flexibility = VertexColor.r * VertexColor.r;
@@ -83,11 +89,13 @@ float3 CalculateFoliageWorldWPO(
     float Shiver = sin(Time * 10.0f  + LocalPhase)       * 0.6f
                  + sin(Time * 15.7f  + LocalPhase * 1.3f) * 0.3f
                  + sin(Time * 23.0f  + LocalPhase * 0.7f) * 0.1f;
-    Shiver *= Turbulence * DetailBendScale * Speed * Flexibility;
+    float DetailAtten = lerp(1.0f, 0.22f, LeanStrength);
+    Shiver *= Turbulence * DetailBendScale * Speed * Flexibility * DetailAtten;
 
     float3 DetailBend = WindDir * Shiver;
+    float DownBend = -min(Speed, 1000.0f) * 0.06f * Flexibility * LeanStrength;
 
-    return MainBend + DetailBend;
+    return MainBend + DetailBend + float3(0.0f, 0.0f, DownBend);
 }
 
 #endif // WIND_FOLIAGE_USF
