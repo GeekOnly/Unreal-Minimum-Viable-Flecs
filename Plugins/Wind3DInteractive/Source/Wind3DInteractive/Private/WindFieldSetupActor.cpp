@@ -105,6 +105,105 @@ void AWindFieldSetupActor::BeginPlay()
     }
 }
 
+void AWindFieldSetupActor::ResolveFoliagePhysicsDefaults(
+    float& OutSensitivity,
+    float& OutStiffness,
+    float& OutDamping,
+    float& OutMass,
+    float& OutSpringConstant,
+    float& OutDampingCoefficient,
+    float& OutMaxVelocity,
+    float& OutMaxAcceleration,
+    float& OutRestDisplacement,
+    float& OutWindFilterAlpha) const
+{
+    OutSensitivity = FoliageSensitivity;
+    OutStiffness = FoliageStiffness;
+    OutDamping = FoliageDamping;
+    OutMass = FoliageMass;
+    OutSpringConstant = FoliageSpringConstant;
+    OutDampingCoefficient = FoliageDampingCoefficient;
+    OutMaxVelocity = FoliageMaxVelocity;
+    OutMaxAcceleration = FoliageMaxAcceleration;
+    OutRestDisplacement = FoliageRestDisplacement;
+    OutWindFilterAlpha = FoliageWindFilterAlpha;
+
+    switch (FoliagePhysicsPreset)
+    {
+    case EWindFoliagePhysicsPreset::Grass:
+        OutSensitivity = 0.95f;
+        OutStiffness = 7.f;
+        OutDamping = 2.6f;
+        OutMass = 0.35f;
+        OutSpringConstant = 16.f;
+        OutDampingCoefficient = 8.f;
+        OutMaxVelocity = 9.f;
+        OutMaxAcceleration = 120.f;
+        OutRestDisplacement = 0.f;
+        OutWindFilterAlpha = 0.38f;
+        break;
+
+    case EWindFoliagePhysicsPreset::Shrub:
+        OutSensitivity = 1.1f;
+        OutStiffness = 10.f;
+        OutDamping = 2.2f;
+        OutMass = 0.8f;
+        OutSpringConstant = 30.f;
+        OutDampingCoefficient = 12.f;
+        OutMaxVelocity = 5.5f;
+        OutMaxAcceleration = 65.f;
+        OutRestDisplacement = 0.f;
+        OutWindFilterAlpha = 0.28f;
+        break;
+
+    case EWindFoliagePhysicsPreset::Tree:
+        OutSensitivity = 1.35f;
+        OutStiffness = 14.f;
+        OutDamping = 2.8f;
+        OutMass = 2.2f;
+        OutSpringConstant = 52.f;
+        OutDampingCoefficient = 18.f;
+        OutMaxVelocity = 3.f;
+        OutMaxAcceleration = 28.f;
+        OutRestDisplacement = 0.f;
+        OutWindFilterAlpha = 0.18f;
+        break;
+
+    case EWindFoliagePhysicsPreset::Custom:
+    default:
+        break;
+    }
+}
+
+void AWindFieldSetupActor::ApplyFoliagePresetToDefaults()
+{
+    if (FoliagePhysicsPreset == EWindFoliagePhysicsPreset::Custom)
+    {
+        UE_LOG(LogWind3D, Log, TEXT("ApplyFoliagePresetToDefaults: Preset is Custom, no values changed."));
+        return;
+    }
+
+    ResolveFoliagePhysicsDefaults(
+        FoliageSensitivity,
+        FoliageStiffness,
+        FoliageDamping,
+        FoliageMass,
+        FoliageSpringConstant,
+        FoliageDampingCoefficient,
+        FoliageMaxVelocity,
+        FoliageMaxAcceleration,
+        FoliageRestDisplacement,
+        FoliageWindFilterAlpha);
+
+    UE_LOG(LogWind3D, Log,
+        TEXT("Applied foliage preset %d -> Sens=%.2f, Mass=%.2f, K=%.2f, Damp=%.2f"),
+        static_cast<int32>(FoliagePhysicsPreset),
+        FoliageSensitivity,
+        FoliageMass,
+        FoliageSpringConstant,
+        FoliageDampingCoefficient);
+}
+
 bool AWindFieldSetupActor::ShouldRegisterFoliageComponent(const UHierarchicalInstancedStaticMeshComponent* HISM) const
 {
     if (!HISM) return false;
@@ -139,6 +238,29 @@ void AWindFieldSetupActor::AutoRegisterFoliage(UWindSubsystem* WindSys)
 
     UWorld* World = GetWorld();
     if (!World) return;
+
+    float ResolvedSensitivity = 0.f;
+    float ResolvedStiffness = 0.f;
+    float ResolvedDamping = 0.f;
+    float ResolvedMass = 0.f;
+    float ResolvedSpringConstant = 0.f;
+    float ResolvedDampingCoefficient = 0.f;
+    float ResolvedMaxVelocity = 0.f;
+    float ResolvedMaxAcceleration = 0.f;
+    float ResolvedRestDisplacement = 0.f;
+    float ResolvedWindFilterAlpha = 0.f;
+
+    ResolveFoliagePhysicsDefaults(
+        ResolvedSensitivity,
+        ResolvedStiffness,
+        ResolvedDamping,
+        ResolvedMass,
+        ResolvedSpringConstant,
+        ResolvedDampingCoefficient,
+        ResolvedMaxVelocity,
+        ResolvedMaxAcceleration,
+        ResolvedRestDisplacement,
+        ResolvedWindFilterAlpha);
 
     TArray<UHierarchicalInstancedStaticMeshComponent*> CandidateComponents;
     if (FoliageSourceActors.Num() > 0)
@@ -227,18 +349,18 @@ void AWindFieldSetupActor::AutoRegisterFoliage(UWindSubsystem* WindSys)
                 HISM,
                 InstanceIndex,
                 WorldLocation,
-                FoliageSensitivity,
-                FoliageStiffness,
-                FoliageDamping,
+                ResolvedSensitivity,
+                ResolvedStiffness,
+                ResolvedDamping,
                 FoliageCPDSlotDisplace,
                 FoliageCPDSlotTurbulence,
-                FoliageMass,
-                FoliageSpringConstant,
-                FoliageDampingCoefficient,
-                FoliageMaxVelocity,
-                FoliageMaxAcceleration,
-                FoliageRestDisplacement,
-                FoliageWindFilterAlpha
+                ResolvedMass,
+                ResolvedSpringConstant,
+                ResolvedDampingCoefficient,
+                ResolvedMaxVelocity,
+                ResolvedMaxAcceleration,
+                ResolvedRestDisplacement,
+                ResolvedWindFilterAlpha
             );
 
             if (Handle.IsValid())
@@ -254,7 +376,8 @@ void AWindFieldSetupActor::AutoRegisterFoliage(UWindSubsystem* WindSys)
     }
 
     UE_LOG(LogWind3D, Log,
-        TEXT("AutoRegisterFoliage: Registered=%d, Components=%d, Scanned=%d, Skipped(Filter=%d, Radius=%d, Cap=%d)"),
+        TEXT("AutoRegisterFoliage: Preset=%d, Registered=%d, Components=%d, Scanned=%d, Skipped(Filter=%d, Radius=%d, Cap=%d)"),
+        static_cast<int32>(FoliagePhysicsPreset),
         RegisteredCount,
         UniqueComponents.Num(),
         ScannedCount,

@@ -34,6 +34,45 @@ static TAutoConsoleVariable<int32> CVarShowWindObstacleNormals(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarShowFoliageDisplacementDebug(
+	TEXT("Wind3D.ShowFoliageDisplacementDebug"),
+	0,
+	TEXT("Visualize per-instance foliage displacement debug markers.\n")
+	TEXT("0: Off\n")
+	TEXT("1: On"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarShowFoliageDisplacementText(
+	TEXT("Wind3D.ShowFoliageDisplacementText"),
+	0,
+	TEXT("Show text labels for per-instance foliage displacement debug.\n")
+	TEXT("0: Off\n")
+	TEXT("1: On"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementDebugMaxInstances(
+	TEXT("Wind3D.FoliageDisplacementDebugMaxInstances"),
+	400,
+	TEXT("Maximum foliage instances to draw for displacement debug."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementDebugHeight(
+	TEXT("Wind3D.FoliageDisplacementDebugHeight"),
+	20.f,
+	TEXT("Vertical offset from instance location for displacement debug markers."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementDebugScale(
+	TEXT("Wind3D.FoliageDisplacementDebugScale"),
+	45.f,
+	TEXT("World scale (cm) for displacement debug line length."),
+	ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<int32> CVarUseGPUWind(
 	TEXT("Wind3D.UseGPU"),
 	0,
@@ -425,6 +464,11 @@ void UWindSubsystem::Tick(float DeltaTime)
 	if (CVarShowWindDebug.GetValueOnGameThread() > 0)
 	{
 		DrawDebugWind();
+	}
+
+	if (CVarShowFoliageDisplacementDebug.GetValueOnGameThread() > 0)
+	{
+		DrawDebugFoliageDisplacement();
 	}
 }
 
@@ -1040,6 +1084,72 @@ void UWindSubsystem::DrawDebugWind()
 			*GridMin.ToString(), *GridMax.ToString(),
 			bUseCascade && Cascade.IsValid() ? Cascade->GetNumLevels() : 0);
 	}
+}
+
+void UWindSubsystem::DrawDebugFoliageDisplacement()
+{
+	UWorld* World = GetWorld();
+	if (!World || !ECSWorld) return;
+
+	const bool bShowText = CVarShowFoliageDisplacementText.GetValueOnGameThread() != 0;
+	const int32 MaxDraw = FMath::Max(CVarFoliageDisplacementDebugMaxInstances.GetValueOnGameThread(), 1);
+	const float HeightOffset = CVarFoliageDisplacementDebugHeight.GetValueOnGameThread();
+	const float DrawScale = FMath::Max(CVarFoliageDisplacementDebugScale.GetValueOnGameThread(), 1.f);
+	const float EffectiveMaxSpeed = FMath::Min(FWindTextureManager::MaxWindSpeed, 1000.f);
+
+	int32 DrawCount = 0;
+	ECSWorld->each(
+		[World, bShowText, MaxDraw, HeightOffset, DrawScale, EffectiveMaxSpeed, &DrawCount](
+			const FFoliageWorldPosition& Pos,
+			const FWindReceiver& Recv,
+			const FWindVelocityAtEntity& WindAt)
+		{
+			if (DrawCount >= MaxDraw)
+			{
+				return;
+			}
+			++DrawCount;
+
+			const float MaxBendRef = FMath::Max(Recv.Sensitivity * 2.8f, 0.35f);
+			const float DispNorm = FMath::Clamp(Recv.DisplacementCurrent / MaxBendRef, 0.f, 1.f);
+			const float WindNorm = FMath::Clamp(Recv.FilteredWindSpeed / EffectiveMaxSpeed, 0.f, 1.f);
+
+			const FVector BasePos = Pos.Location + FVector(0.f, 0.f, HeightOffset);
+			const FVector TipPos = BasePos + FVector(0.f, 0.f, Recv.DisplacementCurrent * DrawScale);
+
+			const FLinearColor DispColorLinear = FLinearColor::LerpUsingHSV(FLinearColor::Green, FLinearColor::Red, DispNorm);
+			const FColor DispColor = DispColorLinear.ToFColor(true);
+
+			DrawDebugLine(World, BasePos, TipPos, DispColor, false, 0.f, 0, 2.5f);
+			DrawDebugPoint(World, BasePos, 5.f, DispColor, false, 0.f, 0);
+			DrawDebugPoint(World, TipPos, 8.f, FColor::Yellow, false, 0.f, 0);
+
+			const FVector WindDir = WindAt.Velocity.GetSafeNormal();
+			if (!WindDir.IsNearlyZero())
+			{
+				const float ArrowLen = FMath::Lerp(15.f, 45.f, WindNorm);
+				DrawDebugDirectionalArrow(World, BasePos,
+					BasePos + WindDir * ArrowLen,
+					14.f, FColor(80, 180, 255), false, 0.f, 0, 1.5f);
+			}
+
+			if (bShowText)
+			{
+				const FString Label = FString::Printf(
+					TEXT("Disp %.2f  Vel %.2f  Wind %.0f"),
+					Recv.DisplacementCurrent,
+					Recv.DisplacementVelocity,
+					Recv.FilteredWindSpeed);
+				DrawDebugString(World,
+					TipPos + FVector(0.f, 0.f, 10.f),
+					Label,
+					nullptr,
+					DispColor,
+					0.f,
+					false,
+					1.0f);
+			}
+		});
 }
 
 // --- Audio Integration ---

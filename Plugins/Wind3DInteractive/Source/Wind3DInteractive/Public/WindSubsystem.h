@@ -209,6 +209,7 @@ private:
 	void RegisterComponents();
 	void RegisterSystems();
 	void DrawDebugWind();
+	void DrawDebugFoliageDisplacement();
 	void UpdateGridOffset();
 	void UpdateWorldWind(float DeltaTime);
 	void UpdateOccupancy();

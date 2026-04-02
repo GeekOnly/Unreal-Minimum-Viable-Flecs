@@ -8,6 +8,15 @@ class UBoxComponent;
 class UHierarchicalInstancedStaticMeshComponent;
 class UWindSubsystem;
 
+UENUM(BlueprintType)
+enum class EWindFoliagePhysicsPreset : uint8
+{
+	Custom UMETA(DisplayName = "Custom"),
+	Grass  UMETA(DisplayName = "Grass"),
+	Shrub  UMETA(DisplayName = "Shrub"),
+	Tree   UMETA(DisplayName = "Tree")
+};
+
 /**
  * Drag-and-drop actor to setup the Wind Grid volume and visualize it.
  */
@@ -136,6 +145,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register")
 	bool bAutoRegisterFoliage = true;
 
+	/** One-control preset for foliage physics tuning. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Preset", meta = (EditCondition = "bAutoRegisterFoliage"))
+	EWindFoliagePhysicsPreset FoliagePhysicsPreset = EWindFoliagePhysicsPreset::Shrub;
+
+	/** Apply selected preset values into editable default fields (Call in Editor button). */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Foliage|Preset")
+	void ApplyFoliagePresetToDefaults();
+
 	/** Optional source actors. Empty = scan all actors in world for HISM components. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (EditCondition = "bAutoRegisterFoliage"))
 	TArray<TSoftObjectPtr<AActor>> FoliageSourceActors;
@@ -210,4 +227,15 @@ private:
 	void AutoRegisterFoliage(UWindSubsystem* WindSys);
 	bool ShouldRegisterFoliageComponent(const UHierarchicalInstancedStaticMeshComponent* HISM) const;
 	bool IsInsideRegistrationRadius(const FVector& WorldLocation) const;
+	void ResolveFoliagePhysicsDefaults(
+		float& OutSensitivity,
+		float& OutStiffness,
+		float& OutDamping,
+		float& OutMass,
+		float& OutSpringConstant,
+		float& OutDampingCoefficient,
+		float& OutMaxVelocity,
+		float& OutMaxAcceleration,
+		float& OutRestDisplacement,
+		float& OutWindFilterAlpha) const;
 };
