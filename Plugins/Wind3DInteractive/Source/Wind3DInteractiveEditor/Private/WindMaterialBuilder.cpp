@@ -16,6 +16,7 @@
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialExpressionPerInstanceCustomData.h"
 
 #include "Engine/VolumeTexture.h"
 #include "Components/PrimitiveComponent.h"
@@ -72,6 +73,29 @@ static FAutoConsoleCommand GWindCreateDebugMaterialCmd(
 		else
 		{
 			UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create Debug Wind material at: %s"), *Path);
+		}
+	})
+);
+
+static FAutoConsoleCommand GWindCreateFoliageSpringMaterialCmd(
+	TEXT("Wind3D.CreateFoliageSpringMaterial"),
+	TEXT("Creates a foliage spring-physics material. Usage: Wind3D.CreateFoliageSpringMaterial [/Game/Wind/M_WindFoliageSpring_Auto]"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		FString Path = TEXT("/Game/Wind/M_WindFoliageSpring_Auto");
+		if (Args.Num() > 0 && !Args[0].IsEmpty())
+		{
+			Path = Args[0];
+		}
+
+		UMaterial* Mat = UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(Path, 0, 1);
+		if (Mat)
+		{
+			UE_LOG(LogWindMaterialBuilder, Log, TEXT("Foliage spring material created at: %s"), *Path);
+		}
+		else
+		{
+			UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create foliage spring material at: %s"), *Path);
 		}
 	})
 );
@@ -678,6 +702,177 @@ UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
 	else
 	{
 		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to save Debug Wind material: %s"), *PackagePath);
+	}
+
+	return Mat;
+}
+
+// ---------------------------------------------------------------------------
+// CreateFoliageSpringPhysicsMaterial
+// ---------------------------------------------------------------------------
+UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
+	const FString& SavePath,
+	int32 CPDSlotDisplacement,
+	int32 CPDSlotTurbulence)
+{
+	const FString PackagePath = SavePath;
+	const FString MaterialName = FPackageName::GetShortName(PackagePath);
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package)
+	{
+		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create package: %s"), *PackagePath);
+		return nullptr;
+	}
+
+	UMaterial* Mat = NewObject<UMaterial>(Package, *MaterialName, RF_Public | RF_Standalone);
+	if (!Mat)
+	{
+		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to create foliage spring material object"));
+		return nullptr;
+	}
+
+	Mat->TwoSided = true;
+	Mat->bUsedWithInstancedStaticMeshes = true;
+
+	// Core inputs
+	auto* WorldPos = AddExpression<UMaterialExpressionWorldPosition>(Mat, -1400, 200);
+	auto* TimeNode = AddExpression<UMaterialExpressionTime>(Mat, -1400, 420);
+	auto* VertColor = AddExpression<UMaterialExpressionVertexColor>(Mat, -1400, 620);
+	auto* TexCoord = AddExpression<UMaterialExpressionTextureCoordinate>(Mat, -1400, 820);
+
+	// Read spring output from per-instance custom data slots
+	auto* DispCPD = AddExpression<UMaterialExpressionPerInstanceCustomData>(Mat, -1150, 160);
+	DispCPD->DataIndex = FMath::Max(CPDSlotDisplacement, 0);
+
+	auto* TurbCPD = AddExpression<UMaterialExpressionPerInstanceCustomData>(Mat, -1150, 320);
+	TurbCPD->DataIndex = FMath::Max(CPDSlotTurbulence, 0);
+
+	// Tuning parameters
+	auto* DispScale = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1150, 520);
+	DispScale->ParameterName = TEXT("SpringDisplacementScale");
+	DispScale->DefaultValue = 26.f;
+
+	auto* TurbScale = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1150, 620);
+	TurbScale->ParameterName = TEXT("SpringTurbulenceScale");
+	TurbScale->DefaultValue = 7.f;
+
+	auto* RootMaskPower = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1150, 720);
+	RootMaskPower->ParameterName = TEXT("RootMaskPower");
+	RootMaskPower->DefaultValue = 2.2f;
+
+	auto* IdleSwayScale = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1150, 820);
+	IdleSwayScale->ParameterName = TEXT("IdleSwayScale");
+	IdleSwayScale->DefaultValue = 2.0f;
+
+	auto* IdleSwayFreq = AddExpression<UMaterialExpressionScalarParameter>(Mat, -1150, 920);
+	IdleSwayFreq->ParameterName = TEXT("IdleSwayFrequency");
+	IdleSwayFreq->DefaultValue = 1.2f;
+
+	// UV.Y mask (0 root..1 tip or vice versa by authored mesh)
+	auto* MaskV = AddExpression<UMaterialExpressionComponentMask>(Mat, -1150, 1020);
+	MaskV->R = 0; MaskV->G = 1; MaskV->B = 0; MaskV->A = 0;
+	MaskV->Input.Connect(0, TexCoord);
+
+	// WPO from spring custom data + idle sway
+	auto* SpringWPO = AddExpression<UMaterialExpressionCustom>(Mat, -650, 420);
+	SpringWPO->Description = TEXT("FoliageSpringWPO");
+	SpringWPO->OutputType = CMOT_Float3;
+	SpringWPO->Code = TEXT(
+		"float FlexVC = saturate(VertexFlex);\n"
+		"float FlexUV = saturate(1.0 - TexCoordY);\n"
+		"float Flex = max(FlexVC, FlexUV);\n"
+		"float RootMask = pow(Flex, max(RootPow, 0.01));\n"
+		"\n"
+		"float Phase = TimeVal * IdleFreq + dot(WorldPos.xy, float2(0.012, 0.009));\n"
+		"float Idle = sin(Phase) * IdleScale;\n"
+		"\n"
+		"float Spring = DispIn * DispScale;\n"
+		"float Turb = (sin(Phase * 2.13 + TurbIn * 11.0) + cos(Phase * 1.37 + WorldPos.x * 0.02))\n"
+		"           * 0.5 * TurbIn * TurbScale;\n"
+		"\n"
+		"float2 XY = float2(Spring + Idle + Turb, Idle * 0.35 + Turb * 0.5) * RootMask;\n"
+		"float Z = -abs(Spring) * 0.12 * RootMask;\n"
+		"return float3(XY, Z);"
+	);
+
+	SpringWPO->Inputs.Empty();
+	{
+		FCustomInput In; In.InputName = TEXT("WorldPos"); In.Input.Connect(0, WorldPos); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("TimeVal"); In.Input.Connect(0, TimeNode); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("VertexFlex"); In.Input.Connect(1, VertColor); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("TexCoordY"); In.Input.Connect(0, MaskV); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("DispIn"); In.Input.Connect(0, DispCPD); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("TurbIn"); In.Input.Connect(0, TurbCPD); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("DispScale"); In.Input.Connect(0, DispScale); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("TurbScale"); In.Input.Connect(0, TurbScale); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("RootPow"); In.Input.Connect(0, RootMaskPower); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("IdleScale"); In.Input.Connect(0, IdleSwayScale); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("IdleFreq"); In.Input.Connect(0, IdleSwayFreq); SpringWPO->Inputs.Add(In);
+	}
+
+	Mat->GetEditorOnlyData()->WorldPositionOffset.Connect(0, SpringWPO);
+
+	// Lightweight debug color from displacement/turbulence for quick validation.
+	auto* DebugColor = AddExpression<UMaterialExpressionCustom>(Mat, -650, 120);
+	DebugColor->Description = TEXT("FoliageSpringDebugColor");
+	DebugColor->OutputType = CMOT_Float3;
+	DebugColor->Code = TEXT(
+		"float D = saturate(DispIn * 0.6);\n"
+		"float T = saturate(TurbIn);\n"
+		"return lerp(float3(0.08, 0.22, 0.05), float3(0.95, 0.35, 0.02), D) + float3(0.0, T * 0.2, T * 0.2);"
+	);
+	DebugColor->Inputs.Empty();
+	{
+		FCustomInput In; In.InputName = TEXT("DispIn"); In.Input.Connect(0, DispCPD); DebugColor->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("TurbIn"); In.Input.Connect(0, TurbCPD); DebugColor->Inputs.Add(In);
+	}
+	Mat->GetEditorOnlyData()->BaseColor.Connect(0, DebugColor);
+
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+	Package->MarkPackageDirty();
+
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		PackagePath, FPackageName::GetAssetPackageExtension());
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+
+	if (UPackage::SavePackage(Package, Mat, *PackageFilename, SaveArgs))
+	{
+		FAssetRegistryModule::AssetCreated(Mat);
+		UE_LOG(LogWindMaterialBuilder, Log,
+			TEXT("Foliage spring material saved: %s (CPD Disp=%d Turb=%d)"),
+			*PackagePath,
+			FMath::Max(CPDSlotDisplacement, 0),
+			FMath::Max(CPDSlotTurbulence, 0));
+	}
+	else
+	{
+		UE_LOG(LogWindMaterialBuilder, Error, TEXT("Failed to save foliage spring material: %s"), *PackagePath);
 	}
 
 	return Mat;

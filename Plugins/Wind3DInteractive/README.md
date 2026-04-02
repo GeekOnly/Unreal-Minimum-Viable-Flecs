@@ -4,6 +4,7 @@ This README focuses on practical setup for the current Wind3DInteractive plugin 
 - physics-based foliage spring response
 - automatic foliage registration
 - foliage presets (Grass, Shrub, Tree)
+- one-click setup actions (preset apply + material auto-create)
 - displacement debug overlays (instance and heatmap modes)
 
 ## 1) Requirements
@@ -34,10 +35,22 @@ Use `-NoLiveCoding` when editor live coding is active.
 	- optional filters: source actors, tag filter, radius, max instance cap
 5. Choose foliage preset in setup actor:
 	- `FoliagePhysicsPreset = Grass | Shrub | Tree | Custom`
-	- optional: click `ApplyFoliagePresetToDefaults` to copy preset values to editable defaults
+	- optional one-click: click `ApplyFoliagePresetToDefaults` to copy preset values to editable defaults
 6. Place one or more `Wind Motor Actor` in the level and tune shape/emission/strength.
+7. Optional one-click material auto-create (Output Log console):
+	- `Wind3D.CreateFoliageSpringMaterial /Game/Wind/M_WindFoliageSpring_Auto`
 
 ## 3) Foliage Material Contract
+
+One-click helper for foliage spring material generation:
+
+```text
+Wind3D.CreateFoliageSpringMaterial /Game/Wind/M_WindFoliageSpring_Auto
+```
+
+This creates a material that reads PerInstanceCustomData for spring response by default:
+- displacement from slot `0`
+- turbulence from slot `1`
 
 The runtime writes to HISM custom primitive data slots:
 

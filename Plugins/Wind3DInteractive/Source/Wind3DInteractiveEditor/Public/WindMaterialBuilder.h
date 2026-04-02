@@ -42,6 +42,21 @@ public:
 	static UMaterial* CreateDebugMaterial(const FString& SavePath = TEXT("/Game/Wind/M_WindDebug_Auto"));
 
 	/**
+	 * Create a foliage spring-physics material that reads per-instance custom data.
+	 * Intended for HISM foliage driven by WindSubsystem spring displacement/turbulence output.
+	 *
+	 * @param SavePath Content path, e.g. "/Game/Wind/M_WindFoliageSpring_Auto"
+	 * @param CPDSlotDisplacement Custom primitive data slot index for displacement (default 0)
+	 * @param CPDSlotTurbulence Custom primitive data slot index for turbulence (default 1)
+	 * @return The created UMaterial, or nullptr on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Wind3D|Editor", meta = (DevelopmentOnly))
+	static UMaterial* CreateFoliageSpringPhysicsMaterial(
+		const FString& SavePath = TEXT("/Game/Wind/M_WindFoliageSpring_Auto"),
+		int32 CPDSlotDisplacement = 0,
+		int32 CPDSlotTurbulence = 1);
+
+	/**
 	 * Apply wind material to a component.
 	 * Creates a MID, binds the wind volume texture, and applies it.
 	 * 
