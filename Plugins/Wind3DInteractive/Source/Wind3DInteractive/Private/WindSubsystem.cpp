@@ -92,6 +92,81 @@ static TAutoConsoleVariable<float> CVarFoliageDisplacementDebugCameraRadius(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementDebugRenderMode(
+	TEXT("Wind3D.FoliageDisplacementDebugRenderMode"),
+	1,
+	TEXT("Render mode for foliage displacement debug.\n")
+	TEXT("0: Instance lines\n")
+	TEXT("1: Heatmap grid clusters\n")
+	TEXT("2: Both"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementHeatmapCellSize(
+	TEXT("Wind3D.FoliageDisplacementHeatmapCellSize"),
+	220.f,
+	TEXT("Heatmap grid cluster cell size in cm."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementHeatmapMinSamples(
+	TEXT("Wind3D.FoliageDisplacementHeatmapMinSamples"),
+	2,
+	TEXT("Minimum foliage samples per cluster to draw a heatmap point."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementHeatmapMaxClusters(
+	TEXT("Wind3D.FoliageDisplacementHeatmapMaxClusters"),
+	1000,
+	TEXT("Maximum number of heatmap clusters to draw."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementHeatmapPointSizeMin(
+	TEXT("Wind3D.FoliageDisplacementHeatmapPointSizeMin"),
+	8.f,
+	TEXT("Minimum point size for heatmap cluster markers."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementHeatmapPointSizeMax(
+	TEXT("Wind3D.FoliageDisplacementHeatmapPointSizeMax"),
+	28.f,
+	TEXT("Maximum point size for heatmap cluster markers."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementHeatmapHeight(
+	TEXT("Wind3D.FoliageDisplacementHeatmapHeight"),
+	35.f,
+	TEXT("Height offset for heatmap points in cm."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementDistanceOptimize(
+	TEXT("Wind3D.FoliageDisplacementDistanceOptimize"),
+	1,
+	TEXT("Enable camera-distance optimization for foliage displacement debug.\n")
+	TEXT("0: Off\n")
+	TEXT("1: On"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementDistanceNear(
+	TEXT("Wind3D.FoliageDisplacementDistanceNear"),
+	1200.f,
+	TEXT("Near distance for debug LOD/fade in cm."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementDistanceFar(
+	TEXT("Wind3D.FoliageDisplacementDistanceFar"),
+	8000.f,
+	TEXT("Far distance for debug LOD/fade in cm."),
+	ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<int32> CVarUseGPUWind(
 	TEXT("Wind3D.UseGPU"),
 	0,
