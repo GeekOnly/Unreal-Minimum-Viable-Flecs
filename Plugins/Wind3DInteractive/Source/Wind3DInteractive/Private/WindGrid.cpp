@@ -139,14 +139,31 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 		BoundsExtent = FMath::Max(BoundsExtent, Motor.MoveLength + Motor.Radius);
 	}
 
+	const float RadiusSq = Motor.Radius * Motor.Radius;
+	const float SafeRadius = FMath::Max(Motor.Radius, 1.f);
+
+	const FVector MoveDeltaRaw = Motor.WorldPosition - Motor.PreviousPosition;
+	const float MoveDistanceRaw = MoveDeltaRaw.Size();
+	const FVector MoveDirRaw = MoveDistanceRaw > SMALL_NUMBER
+		? MoveDeltaRaw / MoveDistanceRaw
+		: (Motor.Direction.IsNearlyZero() ? FVector::ForwardVector : Motor.Direction.GetSafeNormal());
+
+	// Explicit trail segment for Moving motors: extends backward from current position.
+	const float EffectiveTrailLength = (Emission == EWindEmissionType::Moving)
+		? FMath::Max(Motor.MoveLength, MoveDistanceRaw)
+		: 0.f;
+	const FVector TrailEnd = Motor.WorldPosition;
+	const FVector TrailStart = TrailEnd - MoveDirRaw * EffectiveTrailLength;
+	const FVector TrailDelta = TrailEnd - TrailStart;
+	const float TrailLenSq = TrailDelta.SizeSquared();
+
 	// Bounding box in world space
 	FVector BoundsMin, BoundsMax;
 	if (Emission == EWindEmissionType::Moving)
 	{
-		// Union of current + previous position
-		// Use BoundsExtent (which includes height/radius) for safe padding, instead of just Radius.
-		BoundsMin = FVector::Min(Motor.WorldPosition, Motor.PreviousPosition) - FVector(BoundsExtent);
-		BoundsMax = FVector::Max(Motor.WorldPosition, Motor.PreviousPosition) + FVector(BoundsExtent);
+		// Union of trail endpoints to include explicit MoveLength influence.
+		BoundsMin = FVector::Min(TrailStart, TrailEnd) - FVector(BoundsExtent);
+		BoundsMax = FVector::Max(TrailStart, TrailEnd) + FVector(BoundsExtent);
 	}
 	else if (MotorShape == EWindMotorShape::Cylinder)
 	{
@@ -170,8 +187,6 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 	const int32 MaxX = FMath::Clamp(CellMax.X, 0, SizeX - 1);
 	const int32 MaxY = FMath::Clamp(CellMax.Y, 0, SizeY - 1);
 	const int32 MaxZ = FMath::Clamp(CellMax.Z, 0, SizeZ - 1);
-
-	const float RadiusSq = Motor.Radius * Motor.Radius;
 
 	for (int32 Z = MinZ; Z <= MaxZ; Z++)
 	{
@@ -211,29 +226,30 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 					}
 					else
 					{
-						// Moving motor: capsule along movement path (Sphere/Point)
-						// Project cell onto line segment from PreviousPosition to WorldPosition
-						const FVector MoveDir = Motor.WorldPosition - Motor.PreviousPosition;
-						const float MoveLenSq = MoveDir.SizeSquared();
+						// Moving motor: capsule along explicit trail segment.
+						// Project onto line from TrailStart to TrailEnd.
 
 						FVector ClosestPoint;
-						if (MoveLenSq < SMALL_NUMBER)
+						float TrailT = 1.f;
+						if (TrailLenSq < SMALL_NUMBER)
 						{
 							ClosestPoint = Motor.WorldPosition;
 						}
 						else
 						{
-							const float T = FMath::Clamp(
-								FVector::DotProduct(CellCenter - Motor.PreviousPosition, MoveDir) / MoveLenSq,
+							TrailT = FMath::Clamp(
+								FVector::DotProduct(CellCenter - TrailStart, TrailDelta) / TrailLenSq,
 								0.f, 1.f);
-							ClosestPoint = Motor.PreviousPosition + MoveDir * T;
+							ClosestPoint = TrailStart + TrailDelta * TrailT;
 						}
 
 						const float DistSq = (CellCenter - ClosestPoint).SizeSquared();
 						if (DistSq > RadiusSq) continue;
 
 						const float Dist = FMath::Sqrt(DistSq);
-						Falloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / Motor.Radius);
+						const float RadialFalloff = FMath::SmoothStep(0.f, 1.f, 1.f - Dist / SafeRadius);
+						const float TrailFalloff = FMath::Lerp(0.35f, 1.f, TrailT);
+						Falloff = RadialFalloff * TrailFalloff;
 					}
 				}
 				else if (MotorShape == EWindMotorShape::Cylinder)
@@ -296,8 +312,9 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 
 				case EWindEmissionType::Moving:
 				{
-					const FVector MoveDelta = Motor.WorldPosition - Motor.PreviousPosition;
-					const float MoveDistance = MoveDelta.Size();
+					const FVector MoveDelta = MoveDeltaRaw;
+					const float MoveDistance = MoveDistanceRaw;
+					const float LinearSpeed = MoveDistance / FMath::Max(DeltaTime, KINDA_SMALL_NUMBER);
 
 					// --- Angular velocity contribution ---
 					// Tangential velocity at this cell: V_tan = ω × r
@@ -329,7 +346,7 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 					{
 						// Linear motion only (original behavior)
 						const float SpeedBoost = FMath::Clamp(
-							MoveDistance / FMath::Max(Motor.Radius * 0.5f, 1.f),
+							LinearSpeed / FMath::Max(SafeRadius, 50.f),
 							0.f, 5.f);
 						InjectionFactor = 1.0f + SpeedBoost * 3.0f;
 
@@ -352,7 +369,7 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 					{
 						// Both linear + angular — blend
 						const float SpeedBoost = FMath::Clamp(
-							MoveDistance / FMath::Max(Motor.Radius * 0.5f, 1.f),
+							LinearSpeed / FMath::Max(SafeRadius, 50.f),
 							0.f, 5.f);
 						// AngSpeed-based boost (radius-independent, same as rotation-only branch)
 						const float AngularBoost = FMath::Clamp(AngSpeed / 1.f, 0.f, 5.f);
@@ -372,6 +389,36 @@ void FWindGrid::InjectMotor(const FWindMotorData& Motor, float DeltaTime)
 
 				const int32 Idx = CellIndex(X, Y, Z);
 				if (Solids[Idx]) continue; // Don't inject into solid cells
+
+				// If force points into nearby solid cells, bend it along obstacle tangent.
+				if (!Force.IsNearlyZero())
+				{
+					const auto IsSolidSafe = [this](int32 Cx, int32 Cy, int32 Cz) -> bool
+					{
+						return IsInBounds(Cx, Cy, Cz) && IsSolid(Cx, Cy, Cz);
+					};
+
+					const FVector SolidNormal(
+						(IsSolidSafe(X - 1, Y, Z) ? 1.f : 0.f) - (IsSolidSafe(X + 1, Y, Z) ? 1.f : 0.f),
+						(IsSolidSafe(X, Y - 1, Z) ? 1.f : 0.f) - (IsSolidSafe(X, Y + 1, Z) ? 1.f : 0.f),
+						(IsSolidSafe(X, Y, Z - 1) ? 1.f : 0.f) - (IsSolidSafe(X, Y, Z + 1) ? 1.f : 0.f)
+					);
+
+					if (!SolidNormal.IsNearlyZero())
+					{
+						const FVector N = SolidNormal.GetSafeNormal();
+						const float IntoObstacle = FVector::DotProduct(Force.GetSafeNormal(), -N);
+						if (IntoObstacle > 0.05f)
+						{
+							FVector Deflected = FVector::VectorPlaneProject(Force, N);
+							if (!Deflected.IsNearlyZero())
+							{
+								Deflected = Deflected.GetSafeNormal() * Force.Size();
+								Force = FMath::Lerp(Force, Deflected, 0.6f);
+							}
+						}
+					}
+				}
 
 				Velocities[Idx] += Force * InjectionFactor * Motor.ImpulseScale;
 

@@ -100,6 +100,100 @@ float SampleWindTurbulence(
 }
 
 // ============================================================
+// Procedural World Wind (fallback outside 3D volume)
+// ============================================================
+// Creates traveling wind waves from ambient wind direction.
+// Foliage outside the grid volume still moves naturally.
+//
+// AmbientWind: float3 from MPC "WindAmbient" (cm/s)
+// WorldPos:    vertex world position
+// Time:        seconds (e.g. View.GameTime)
+
+float4 SampleWorldWind(
+    float3 WorldPos,
+    float3 AmbientWind,
+    float Time)
+{
+    float AmbientSpeed = length(AmbientWind);
+    if (AmbientSpeed < 1.0f) return float4(0, 0, 0, 0);
+
+    float3 AmbientDir = AmbientWind / AmbientSpeed;
+
+    // Project position onto wind direction for traveling waves
+    float PosDot = dot(WorldPos.xy, AmbientDir.xy);
+
+    // Multi-frequency traveling waves (reference: ShaderToy grass)
+    // Each wave travels at a different speed and spatial frequency
+    float Wave1 = sin(Time * 0.9f + WorldPos.x * 0.012f) * 0.5f;
+    Wave1      += sin(Time * 0.7f + WorldPos.y * 0.014f) * 0.5f;
+    Wave1      *= 0.5f;
+
+    float Wave2 = sin(Time * 1.3f + PosDot * 0.008f) * 0.3f;
+    float Wave3 = sin(Time * 2.1f + WorldPos.x * 0.025f + WorldPos.y * 0.018f) * 0.2f;
+
+    float WaveComposite = Wave1 + Wave2 + Wave3; // approx [-1, 1]
+
+    // Gust envelope (slower, larger scale)
+    float Gust = sin(Time * 0.3f + PosDot * 0.004f) * 0.5f + 0.5f; // [0, 1]
+
+    // Modulate speed: base ± 40% from waves, ± 30% from gusts
+    float ModulatedSpeed = AmbientSpeed
+        * lerp(0.6f, 1.4f, WaveComposite * 0.5f + 0.5f)
+        * lerp(0.7f, 1.3f, Gust);
+
+    // Slight direction oscillation for organic feel
+    float DirOsc = sin(Time * 0.5f + WorldPos.x * 0.008f + WorldPos.y * 0.006f) * 0.15f;
+    float CosOsc = cos(DirOsc);
+    float SinOsc = sin(DirOsc);
+    float3 ModulatedDir = float3(
+        AmbientDir.x * CosOsc - AmbientDir.y * SinOsc,
+        AmbientDir.x * SinOsc + AmbientDir.y * CosOsc,
+        0.0f
+    );
+
+    float Turbulence = saturate(abs(Wave3) * 2.5f + Gust * 0.2f);
+
+    return float4(ModulatedDir * ModulatedSpeed, Turbulence);
+}
+
+// Combined sampler: grid wind + world wind fallback with smooth blending
+float4 SampleWindWithFallback(
+    Texture3D WindVolume,
+    SamplerState WindVolumeSampler,
+    float3 WorldPos,
+    float3 VolumeOrigin,
+    float3 VolumeSize,
+    float3 AmbientWind,
+    float Time)
+{
+    float3 UVW = (WorldPos - VolumeOrigin) / max(VolumeSize, 0.001f);
+
+    // Compute inside-volume weight with smooth edge falloff
+    float3 DistFromEdge = min(saturate(UVW), 1.0f - saturate(UVW));
+    float InsideWeight = saturate(min(min(DistFromEdge.x, DistFromEdge.y), DistFromEdge.z) * 10.0f);
+
+    // Clamp to volume check (with generous margin for blend)
+    if (any(UVW < -0.15f) || any(UVW > 1.15f))
+        InsideWeight = 0.0f;
+
+    // Grid wind (when inside volume)
+    float4 GridWind = float4(0, 0, 0, 0);
+    if (InsideWeight > 0.01f)
+    {
+        float4 Texel = Texture3DSampleLevel(WindVolume, WindVolumeSampler, saturate(UVW), 0);
+        GridWind = float4(DecodeWindVelocity(Texel), DecodeWindTurbulence(Texel));
+    }
+
+    // Procedural world wind (always available)
+    float4 WorldWind = SampleWorldWind(WorldPos, AmbientWind, Time);
+
+    // Inside volume: grid dominates (it already contains ambient + motors)
+    // Outside volume: world wind provides natural wave motion
+    // At edges: smooth blend
+    return lerp(WorldWind, GridWind, InsideWeight);
+}
+
+// ============================================================
 // Debug Visualization Functions
 // ============================================================
 // Use in a translucent debug material instead of DrawDebugWind.

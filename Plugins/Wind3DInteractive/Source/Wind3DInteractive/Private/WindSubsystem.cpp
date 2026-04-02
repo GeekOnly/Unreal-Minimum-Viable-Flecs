@@ -463,8 +463,19 @@ void UWindSubsystem::SetGridCenterActor(AActor* Actor)
 void UWindSubsystem::UpdateGridOffset()
 {
 	if (!GridCenterActor.IsValid()) return;
+	if (!Solver.IsValid() && !(bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())) return;
 
 	const FVector CurrentCenter = GridCenterActor->GetActorLocation();
+
+	auto CenterSolverOnActor = [](IWindSolver& InSolver, const FVector& Center)
+	{
+		const float Cell = InSolver.GetCellSize();
+		const FVector HalfExtent(
+			InSolver.GetSizeX() * Cell * 0.5f,
+			InSolver.GetSizeY() * Cell * 0.5f,
+			InSolver.GetSizeZ() * Cell * 0.5f);
+		InSolver.SetWorldOrigin(Center - HalfExtent);
+	};
 
 	if (!bGridCenterInitialized)
 	{
@@ -475,6 +486,10 @@ void UWindSubsystem::UpdateGridOffset()
 		if (bUseCascade && Cascade.IsValid() && Cascade->IsInitialized())
 		{
 			Cascade->SetWorldOriginCentered(CurrentCenter);
+		}
+		else
+		{
+			CenterSolverOnActor(*Solver, CurrentCenter);
 		}
 		return;
 	}
