@@ -144,6 +144,29 @@ static TAutoConsoleVariable<float> CVarFoliageDisplacementHeatmapHeight(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementHeatmapAdaptiveCellSize(
+	TEXT("Wind3D.FoliageDisplacementHeatmapAdaptiveCellSize"),
+	1,
+	TEXT("Enable adaptive heatmap cell size based on camera distance.\n")
+	TEXT("0: Off (fixed cell size)\n")
+	TEXT("1: On (larger cells at far distance)"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFoliageDisplacementHeatmapAdaptiveMaxScale(
+	TEXT("Wind3D.FoliageDisplacementHeatmapAdaptiveMaxScale"),
+	4.0f,
+	TEXT("Maximum heatmap cell-size scale at far distance when adaptive mode is enabled."),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarFoliageDisplacementHeatmapAdaptiveLevels(
+	TEXT("Wind3D.FoliageDisplacementHeatmapAdaptiveLevels"),
+	5,
+	TEXT("Number of distance bands for adaptive heatmap clustering."),
+	ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<int32> CVarFoliageDisplacementDistanceOptimize(
 	TEXT("Wind3D.FoliageDisplacementDistanceOptimize"),
 	1,
@@ -166,6 +189,28 @@ static TAutoConsoleVariable<float> CVarFoliageDisplacementDistanceFar(
 	TEXT("Far distance for debug LOD/fade in cm."),
 	ECVF_RenderThreadSafe
 );
+
+struct FFoliageHeatKey
+{
+	int32 X = 0;
+	int32 Y = 0;
+	int32 Z = 0;
+	int32 Level = 0;
+
+	bool operator==(const FFoliageHeatKey& Other) const
+	{
+		return X == Other.X && Y == Other.Y && Z == Other.Z && Level == Other.Level;
+	}
+};
+
+FORCEINLINE uint32 GetTypeHash(const FFoliageHeatKey& Key)
+{
+	uint32 Hash = ::GetTypeHash(Key.X);
+	Hash = HashCombine(Hash, ::GetTypeHash(Key.Y));
+	Hash = HashCombine(Hash, ::GetTypeHash(Key.Z));
+	Hash = HashCombine(Hash, ::GetTypeHash(Key.Level));
+	return Hash;
+}
 
 static TAutoConsoleVariable<int32> CVarUseGPUWind(
 	TEXT("Wind3D.UseGPU"),
@@ -1200,6 +1245,9 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 	const float HeatmapPointSizeMin = FMath::Max(CVarFoliageDisplacementHeatmapPointSizeMin.GetValueOnGameThread(), 1.f);
 	const float HeatmapPointSizeMax = FMath::Max(CVarFoliageDisplacementHeatmapPointSizeMax.GetValueOnGameThread(), HeatmapPointSizeMin);
 	const float HeatmapHeight = CVarFoliageDisplacementHeatmapHeight.GetValueOnGameThread();
+	const bool bAdaptiveHeatCellSizeCVar = CVarFoliageDisplacementHeatmapAdaptiveCellSize.GetValueOnGameThread() != 0;
+	const float AdaptiveHeatMaxScale = FMath::Max(CVarFoliageDisplacementHeatmapAdaptiveMaxScale.GetValueOnGameThread(), 1.f);
+	const int32 AdaptiveHeatLevels = FMath::Max(CVarFoliageDisplacementHeatmapAdaptiveLevels.GetValueOnGameThread(), 1);
 	const bool bDistanceOptimize = CVarFoliageDisplacementDistanceOptimize.GetValueOnGameThread() != 0;
 	const float DistanceNear = FMath::Max(CVarFoliageDisplacementDistanceNear.GetValueOnGameThread(), 0.f);
 	const float DistanceFar = FMath::Max(CVarFoliageDisplacementDistanceFar.GetValueOnGameThread(), DistanceNear + 1.f);
@@ -1218,6 +1266,7 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 
 	const float CameraRadiusSq = CameraRadius * CameraRadius;
 	const float InvDistanceRange = 1.f / (DistanceFar - DistanceNear);
+	const bool bAdaptiveHeatCellSize = bAdaptiveHeatCellSizeCVar && bDistanceOptimize && bHasCamera && bDrawHeatmap;
 
 	auto ResolveDebugColor = [ColorMode](float DispNorm) -> FColor
 	{
@@ -1244,10 +1293,12 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 		FVector PositionSum = FVector::ZeroVector;
 		float DisplacementNormSum = 0.f;
 		float MaxDisplacementNorm = 0.f;
+		float CellSize = 0.f;
+		int32 DistanceLevel = 0;
 		int32 Count = 0;
 	};
 
-	TMap<FIntVector, FFoliageHeatCluster> HeatClusters;
+	TMap<FFoliageHeatKey, FFoliageHeatCluster> HeatClusters;
 	HeatClusters.Reserve(2048);
 
 	int32 DrawCount = 0;
@@ -1257,6 +1308,7 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 		[World, bShowText, bDrawInstances, bDrawHeatmap, MaxDraw, HeightOffset, DrawScale, EffectiveMaxSpeed,
 			CameraRadiusSq, bHasCamera, CameraLocation, HeatmapCellSize, HeatmapHeight,
 			DistanceNear, InvDistanceRange, DistanceFar, bDistanceOptimize,
+			bAdaptiveHeatCellSize, AdaptiveHeatMaxScale, AdaptiveHeatLevels,
 			&ResolveDebugColor, &DrawCount, &RadiusSkipped, &HeatClusters, &HeatSourceCount](
 			const FFoliageWorldPosition& Pos,
 			const FWindReceiver& Recv,
@@ -1284,12 +1336,34 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 
 			if (bDrawHeatmap)
 			{
-				const FIntVector ClusterKey(
-					FMath::FloorToInt(Pos.Location.X / HeatmapCellSize),
-					FMath::FloorToInt(Pos.Location.Y / HeatmapCellSize),
-					FMath::FloorToInt(Pos.Location.Z / HeatmapCellSize));
+				int32 DistanceLevel = 0;
+				float ClusterCellSize = HeatmapCellSize;
+				if (bAdaptiveHeatCellSize)
+				{
+					DistanceLevel = FMath::Clamp(
+						FMath::FloorToInt(DistAlpha * static_cast<float>(AdaptiveHeatLevels)),
+						0,
+						AdaptiveHeatLevels - 1);
+
+					const float LevelT = (AdaptiveHeatLevels > 1)
+						? (static_cast<float>(DistanceLevel) / static_cast<float>(AdaptiveHeatLevels - 1))
+						: 0.f;
+					ClusterCellSize = HeatmapCellSize * FMath::Lerp(1.f, AdaptiveHeatMaxScale, LevelT);
+				}
+
+				const FFoliageHeatKey ClusterKey{
+					FMath::FloorToInt(Pos.Location.X / ClusterCellSize),
+					FMath::FloorToInt(Pos.Location.Y / ClusterCellSize),
+					FMath::FloorToInt(Pos.Location.Z / ClusterCellSize),
+					DistanceLevel
+				};
 
 				FFoliageHeatCluster& Cluster = HeatClusters.FindOrAdd(ClusterKey);
+				if (Cluster.Count == 0)
+				{
+					Cluster.CellSize = ClusterCellSize;
+					Cluster.DistanceLevel = DistanceLevel;
+				}
 				Cluster.PositionSum += Pos.Location;
 				Cluster.DisplacementNormSum += DispNorm;
 				Cluster.MaxDisplacementNorm = FMath::Max(Cluster.MaxDisplacementNorm, DispNorm);
@@ -1354,7 +1428,7 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 	int32 DrawnClusters = 0;
 	if (bDrawHeatmap)
 	{
-		for (const TPair<FIntVector, FFoliageHeatCluster>& Pair : HeatClusters)
+		for (const TPair<FFoliageHeatKey, FFoliageHeatCluster>& Pair : HeatClusters)
 		{
 			if (DrawnClusters >= HeatmapMaxClusters)
 			{
@@ -1397,7 +1471,7 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 			DrawDebugPoint(World, DrawPos, PointSize, HeatColor, false, 0.f, 0);
 			DrawDebugBox(World,
 				DrawPos,
-				FVector(HeatmapCellSize * 0.35f, HeatmapCellSize * 0.35f, 6.f),
+				FVector(Cluster.CellSize * 0.35f, Cluster.CellSize * 0.35f, 6.f),
 				HeatColor,
 				false,
 				0.f,
@@ -1427,12 +1501,15 @@ void UWindSubsystem::DrawDebugFoliageDisplacement()
 	if (bHasCamera && CameraRadiusSq > 0.f)
 	{
 		const FString RadiusInfo = FString::Printf(
-			TEXT("FoliageDebug R %.0fcm | Mode %d | Inst %d | Cluster %d | HeatSrc %d | SkipR %d"),
+			TEXT("FoliageDebug R %.0fcm | Mode %d | Inst %d | Cluster %d | HeatSrc %d | Adapt %d L%d Sx%.1f | SkipR %d"),
 			CameraRadius,
 			RenderMode,
 			DrawCount,
 			DrawnClusters,
 			HeatSourceCount,
+			bAdaptiveHeatCellSize ? 1 : 0,
+			AdaptiveHeatLevels,
+			AdaptiveHeatMaxScale,
 			RadiusSkipped);
 		DrawDebugString(World,
 			CameraLocation + FVector(0.f, 0.f, 60.f),
