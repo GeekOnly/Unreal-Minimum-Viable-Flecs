@@ -8,6 +8,9 @@ This README focuses on practical setup for the current Wind3DInteractive plugin 
 - gameplay interaction impulse for foliage (hit/explosion style)
 - displacement debug overlays (instance and heatmap modes)
 
+Implementation plan (GoW-style target):
+- `Docs/FOLIAGE_PHYSICS_GOW_PLAN.md`
+
 ## 1) Requirements
 
 - Unreal Engine 5.7
