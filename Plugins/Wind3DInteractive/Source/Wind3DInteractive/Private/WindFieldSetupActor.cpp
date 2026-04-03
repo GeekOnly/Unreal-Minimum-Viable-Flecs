@@ -382,6 +382,7 @@ void AWindFieldSetupActor::AutoRegisterFoliage(UWindSubsystem* WindSys)
                 ResolvedStiffness,
                 ResolvedDamping,
                 FoliageCPDSlotDisplace,
+                FoliageCPDSlotDisplaceY,
                 FoliageCPDSlotTurbulence,
                 ResolvedMass,
                 ResolvedSpringConstant,

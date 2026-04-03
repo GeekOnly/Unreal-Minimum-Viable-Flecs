@@ -88,7 +88,7 @@ static FAutoConsoleCommand GWindCreateFoliageSpringMaterialCmd(
 			Path = Args[0];
 		}
 
-		UMaterial* Mat = UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(Path, 0, 1);
+		UMaterial* Mat = UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(Path, 0, 1, 2);
 		if (Mat)
 		{
 			UE_LOG(LogWindMaterialBuilder, Log, TEXT("Foliage spring material created at: %s"), *Path);
@@ -712,7 +712,8 @@ UMaterial* UWindMaterialBuilder::CreateDebugMaterial(const FString& SavePath)
 // ---------------------------------------------------------------------------
 UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
 	const FString& SavePath,
-	int32 CPDSlotDisplacement,
+	int32 CPDSlotDisplacementX,
+	int32 CPDSlotDisplacementY,
 	int32 CPDSlotTurbulence)
 {
 	const FString PackagePath = SavePath;
@@ -742,8 +743,11 @@ UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
 	auto* TexCoord = AddExpression<UMaterialExpressionTextureCoordinate>(Mat, -1400, 820);
 
 	// Read spring output from per-instance custom data slots
-	auto* DispCPD = AddExpression<UMaterialExpressionPerInstanceCustomData>(Mat, -1150, 160);
-	DispCPD->DataIndex = FMath::Max(CPDSlotDisplacement, 0);
+	auto* DispXCPD = AddExpression<UMaterialExpressionPerInstanceCustomData>(Mat, -1150, 160);
+	DispXCPD->DataIndex = FMath::Max(CPDSlotDisplacementX, 0);
+
+	auto* DispYCPD = AddExpression<UMaterialExpressionPerInstanceCustomData>(Mat, -1150, 240);
+	DispYCPD->DataIndex = FMath::Max(CPDSlotDisplacementY, 0);
 
 	auto* TurbCPD = AddExpression<UMaterialExpressionPerInstanceCustomData>(Mat, -1150, 320);
 	TurbCPD->DataIndex = FMath::Max(CPDSlotTurbulence, 0);
@@ -785,15 +789,19 @@ UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
 		"float RootMask = pow(Flex, max(RootPow, 0.01));\n"
 		"\n"
 		"float Phase = TimeVal * IdleFreq + dot(WorldPos.xy, float2(0.012, 0.009));\n"
-		"float Idle = sin(Phase) * IdleScale;\n"
+		"float IdleX = sin(Phase) * IdleScale;\n"
+		"float IdleY = cos(Phase * 0.87) * IdleScale * 0.35;\n"
 		"\n"
-		"float Spring = DispIn * DispScale;\n"
+		"float SpringX = DispXIn * DispScale;\n"
+		"float SpringY = DispYIn * DispScale;\n"
 		"float Turb = (sin(Phase * 2.13 + TurbIn * 11.0) + cos(Phase * 1.37 + WorldPos.x * 0.02))\n"
 		"           * 0.5 * TurbIn * TurbScale;\n"
 		"\n"
-		"float2 XY = float2(Spring + Idle + Turb, Idle * 0.35 + Turb * 0.5) * RootMask;\n"
-		"float Z = -abs(Spring) * 0.12 * RootMask;\n"
-		"return float3(XY, Z);"
+		"float X = (SpringX + IdleX + Turb) * RootMask;\n"
+		"float Y = (SpringY + IdleY + Turb * 0.5) * RootMask;\n"
+		"float SpringLen = sqrt(SpringX * SpringX + SpringY * SpringY);\n"
+		"float Z = -SpringLen * 0.12 * RootMask;\n"
+		"return float3(X, Y, Z);"
 	);
 
 	SpringWPO->Inputs.Empty();
@@ -810,7 +818,10 @@ UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
 		FCustomInput In; In.InputName = TEXT("TexCoordY"); In.Input.Connect(0, MaskV); SpringWPO->Inputs.Add(In);
 	}
 	{
-		FCustomInput In; In.InputName = TEXT("DispIn"); In.Input.Connect(0, DispCPD); SpringWPO->Inputs.Add(In);
+		FCustomInput In; In.InputName = TEXT("DispXIn"); In.Input.Connect(0, DispXCPD); SpringWPO->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("DispYIn"); In.Input.Connect(0, DispYCPD); SpringWPO->Inputs.Add(In);
 	}
 	{
 		FCustomInput In; In.InputName = TEXT("TurbIn"); In.Input.Connect(0, TurbCPD); SpringWPO->Inputs.Add(In);
@@ -838,13 +849,16 @@ UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
 	DebugColor->Description = TEXT("FoliageSpringDebugColor");
 	DebugColor->OutputType = CMOT_Float3;
 	DebugColor->Code = TEXT(
-		"float D = saturate(DispIn * 0.6);\n"
+		"float D = saturate(sqrt(DispXIn * DispXIn + DispYIn * DispYIn) * 0.6);\n"
 		"float T = saturate(TurbIn);\n"
 		"return lerp(float3(0.08, 0.22, 0.05), float3(0.95, 0.35, 0.02), D) + float3(0.0, T * 0.2, T * 0.2);"
 	);
 	DebugColor->Inputs.Empty();
 	{
-		FCustomInput In; In.InputName = TEXT("DispIn"); In.Input.Connect(0, DispCPD); DebugColor->Inputs.Add(In);
+		FCustomInput In; In.InputName = TEXT("DispXIn"); In.Input.Connect(0, DispXCPD); DebugColor->Inputs.Add(In);
+	}
+	{
+		FCustomInput In; In.InputName = TEXT("DispYIn"); In.Input.Connect(0, DispYCPD); DebugColor->Inputs.Add(In);
 	}
 	{
 		FCustomInput In; In.InputName = TEXT("TurbIn"); In.Input.Connect(0, TurbCPD); DebugColor->Inputs.Add(In);
@@ -865,9 +879,10 @@ UMaterial* UWindMaterialBuilder::CreateFoliageSpringPhysicsMaterial(
 	{
 		FAssetRegistryModule::AssetCreated(Mat);
 		UE_LOG(LogWindMaterialBuilder, Log,
-			TEXT("Foliage spring material saved: %s (CPD Disp=%d Turb=%d)"),
+			TEXT("Foliage spring material saved: %s (CPD DispX=%d DispY=%d Turb=%d)"),
 			*PackagePath,
-			FMath::Max(CPDSlotDisplacement, 0),
+			FMath::Max(CPDSlotDisplacementX, 0),
+			FMath::Max(CPDSlotDisplacementY, 0),
 			FMath::Max(CPDSlotTurbulence, 0));
 	}
 	else

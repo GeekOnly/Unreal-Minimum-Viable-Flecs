@@ -173,13 +173,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Auto Register", meta = (ClampMin = "0", EditCondition = "bAutoRegisterFoliage"))
 	int32 MaxAutoRegisterInstances = 30000;
 
-	/** Custom primitive data slot for displacement output. */
+	/** Custom primitive data slot for displacement X output. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|CPD", meta = (ClampMin = "0", EditCondition = "bAutoRegisterFoliage"))
 	int32 FoliageCPDSlotDisplace = 0;
 
+	/** Custom primitive data slot for displacement Y output. Set to -1 to use legacy scalar mode. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|CPD", meta = (ClampMin = "-1", EditCondition = "bAutoRegisterFoliage"))
+	int32 FoliageCPDSlotDisplaceY = 1;
+
 	/** Custom primitive data slot for turbulence output. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|CPD", meta = (ClampMin = "0", EditCondition = "bAutoRegisterFoliage"))
-	int32 FoliageCPDSlotTurbulence = 1;
+	int32 FoliageCPDSlotTurbulence = 2;
 
 	// --- Foliage Physics Defaults ---
 

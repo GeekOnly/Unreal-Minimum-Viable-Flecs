@@ -53,8 +53,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Wind3D|Editor", meta = (DevelopmentOnly))
 	static UMaterial* CreateFoliageSpringPhysicsMaterial(
 		const FString& SavePath = TEXT("/Game/Wind/M_WindFoliageSpring_Auto"),
-		int32 CPDSlotDisplacement = 0,
-		int32 CPDSlotTurbulence = 1);
+		int32 CPDSlotDisplacementX = 0,
+		int32 CPDSlotDisplacementY = 1,
+		int32 CPDSlotTurbulence = 2);
 
 	/**
 	 * Apply wind material to a component.

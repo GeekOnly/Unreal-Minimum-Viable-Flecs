@@ -449,46 +449,105 @@ void UWindSubsystem::RegisterSystems()
 				const float SpringK = FMath::Max(Recv[I].SpringConstant * SpringScale * LegacyStiffnessScale, 0.1f);
 				const float DampingCoeff = FMath::Max(Recv[I].DampingCoefficient * DampingScale * LegacyDampingScale, 0.f);
 
-				const float WindForce = FMath::Pow(WindNorm, 0.55f) * Recv[I].Sensitivity * 55.f * ForceScale;
-				const float SpringForce = -SpringK * (Recv[I].DisplacementCurrent - Recv[I].RestDisplacement);
-				const float DampingForce = -DampingCoeff * Recv[I].DisplacementVelocity;
-				float Acceleration = (WindForce + SpringForce + DampingForce) / Mass;
-
-				const float MaxAccel = FMath::Max(Recv[I].MaxAcceleration, 0.1f);
-				Acceleration = FMath::Clamp(Acceleration, -MaxAccel, MaxAccel);
-
-				Recv[I].DisplacementVelocity += Acceleration * DT;
-				const float MaxVel = FMath::Max(Recv[I].MaxVelocity, 0.05f);
-				Recv[I].DisplacementVelocity = FMath::Clamp(Recv[I].DisplacementVelocity, -MaxVel, MaxVel);
-
-				Recv[I].DisplacementCurrent += Recv[I].DisplacementVelocity * DT;
-
 				const float MaxBend = FMath::Max(Recv[I].Sensitivity * 2.8f * ForceScale, 0.35f);
-				if (Recv[I].DisplacementCurrent <= 0.f)
+				const float MaxVel = FMath::Max(Recv[I].MaxVelocity, 0.05f);
+				const float MaxAccel = FMath::Max(Recv[I].MaxAcceleration, 0.1f);
+
+				const bool bDirectional = (Foliage[I].CPDSlotDisplaceY >= 0);
+
+				if (bDirectional)
 				{
-					Recv[I].DisplacementCurrent = 0.f;
-					if (Recv[I].DisplacementVelocity < 0.f)
+					// --- Directional 2D spring-damper ---
+					// Smooth wind direction on XY plane.
+					const FVector2D RawWindDir2D(WindAt[I].Velocity.X, WindAt[I].Velocity.Y);
+					const float WindLen2D = RawWindDir2D.Size();
+					const FVector2D WindUnit2D = (WindLen2D > KINDA_SMALL_NUMBER) ? (RawWindDir2D / WindLen2D) : FVector2D::ZeroVector;
+					Recv[I].FilteredWindDir = FMath::Lerp(Recv[I].FilteredWindDir, WindUnit2D, DtAwareFilter);
+
+					// Wind driving force in 2D.
+					const float ForceMag = FMath::Pow(WindNorm, 0.55f) * Recv[I].Sensitivity * 55.f * ForceScale;
+					const FVector2D WindForce2D = Recv[I].FilteredWindDir * ForceMag;
+
+					// Spring restoring force toward rest (origin).
+					const FVector2D SpringForce2D = -SpringK * Recv[I].Displacement2D;
+					// Damping force opposing velocity.
+					const FVector2D DampForce2D = -DampingCoeff * Recv[I].Velocity2D;
+
+					FVector2D Accel2D = (WindForce2D + SpringForce2D + DampForce2D) / Mass;
+					// Clamp acceleration magnitude.
+					const float AccelLen = Accel2D.Size();
+					if (AccelLen > MaxAccel)
 					{
-						Recv[I].DisplacementVelocity = 0.f;
+						Accel2D *= (MaxAccel / AccelLen);
 					}
-				}
-				else if (Recv[I].DisplacementCurrent >= MaxBend)
-				{
-					Recv[I].DisplacementCurrent = MaxBend;
-					if (Recv[I].DisplacementVelocity > 0.f)
+
+					Recv[I].Velocity2D += Accel2D * DT;
+					// Clamp velocity magnitude.
+					const float VelLen = Recv[I].Velocity2D.Size();
+					if (VelLen > MaxVel)
 					{
-						Recv[I].DisplacementVelocity *= 0.25f;
+						Recv[I].Velocity2D *= (MaxVel / VelLen);
+					}
+
+					Recv[I].Displacement2D += Recv[I].Velocity2D * DT;
+					// Clamp displacement magnitude to MaxBend.
+					const float DispLen = Recv[I].Displacement2D.Size();
+					if (DispLen > MaxBend)
+					{
+						Recv[I].Displacement2D *= (MaxBend / DispLen);
+						// Damp velocity along displacement direction to prevent bounce past limit.
+						const FVector2D DispDir = Recv[I].Displacement2D / MaxBend;
+						const float DotVal = FVector2D::DotProduct(Recv[I].Velocity2D, DispDir);
+						if (DotVal > 0.f)
+						{
+							Recv[I].Velocity2D -= DispDir * (DotVal * 0.75f);
+						}
+					}
+
+					// Keep scalar fields in sync for debug/heatmap visualization.
+					Recv[I].DisplacementCurrent = DispLen;
+					Recv[I].DisplacementVelocity = VelLen;
+				}
+				else
+				{
+					// --- Scalar spring-damper (backward compat) ---
+					const float WindForce = FMath::Pow(WindNorm, 0.55f) * Recv[I].Sensitivity * 55.f * ForceScale;
+					const float SpringForce = -SpringK * (Recv[I].DisplacementCurrent - Recv[I].RestDisplacement);
+					const float DampingForce = -DampingCoeff * Recv[I].DisplacementVelocity;
+					float Acceleration = (WindForce + SpringForce + DampingForce) / Mass;
+					Acceleration = FMath::Clamp(Acceleration, -MaxAccel, MaxAccel);
+
+					Recv[I].DisplacementVelocity += Acceleration * DT;
+					Recv[I].DisplacementVelocity = FMath::Clamp(Recv[I].DisplacementVelocity, -MaxVel, MaxVel);
+					Recv[I].DisplacementCurrent += Recv[I].DisplacementVelocity * DT;
+
+					if (Recv[I].DisplacementCurrent <= 0.f)
+					{
+						Recv[I].DisplacementCurrent = 0.f;
+						if (Recv[I].DisplacementVelocity < 0.f)
+						{
+							Recv[I].DisplacementVelocity = 0.f;
+						}
+					}
+					else if (Recv[I].DisplacementCurrent >= MaxBend)
+					{
+						Recv[I].DisplacementCurrent = MaxBend;
+						if (Recv[I].DisplacementVelocity > 0.f)
+						{
+							Recv[I].DisplacementVelocity *= 0.25f;
+						}
 					}
 				}
 
-				const float OutputDisplacement = Recv[I].DisplacementCurrent;
 				const float OutputTurbulence = WindAt[I].Turbulence * FMath::Lerp(1.f, 0.35f, WindNorm);
 
 				auto* HISM = static_cast<UHierarchicalInstancedStaticMeshComponent*>(Foliage[I].HISMComponentPtr);
 				if (HISM && Foliage[I].InstanceIndex >= 0)
 				{
 					const int32 InstanceCount = HISM->GetInstanceCount();
-					const int32 MaxCPDSlot = FMath::Max(Foliage[I].CPDSlotDisplace, Foliage[I].CPDSlotTurb);
+					const int32 MaxCPDSlot = FMath::Max3(Foliage[I].CPDSlotDisplace,
+						FMath::Max(Foliage[I].CPDSlotDisplaceY, 0),
+						Foliage[I].CPDSlotTurb);
 
 					if (Foliage[I].InstanceIndex < InstanceCount && MaxCPDSlot >= 0)
 					{
@@ -503,8 +562,15 @@ void UWindSubsystem::RegisterSystems()
 							continue;
 						}
 
-						// bMarkRenderStateDirty = false for per-instance writes; we batch-mark later.
-						HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, OutputDisplacement, false);
+						if (bDirectional)
+						{
+							HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, Recv[I].Displacement2D.X, false);
+							HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplaceY, Recv[I].Displacement2D.Y, false);
+						}
+						else
+						{
+							HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotDisplace, Recv[I].DisplacementCurrent, false);
+						}
 						HISM->SetCustomDataValue(Foliage[I].InstanceIndex, Foliage[I].CPDSlotTurb, OutputTurbulence, false);
 						DirtyHISMs.Add(HISM);
 					}
@@ -1040,6 +1106,7 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 	float Stiffness,
 	float Damping,
 	int32 CPDSlotDisplace,
+	int32 CPDSlotDisplaceY,
 	int32 CPDSlotTurbulence,
 	float Mass,
 	float SpringConstant,
@@ -1061,12 +1128,13 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 		return FWindEntityHandle();
 	}
 
-	const int32 MaxCPDSlot = FMath::Max(CPDSlotDisplace, CPDSlotTurbulence);
+	const int32 MaxCPDSlot = FMath::Max3(CPDSlotDisplace, FMath::Max(CPDSlotDisplaceY, 0), CPDSlotTurbulence);
 	if (MaxCPDSlot < 0)
 	{
 		UE_LOG(LogWind3D, Warning,
-			TEXT("RegisterFoliageInstance skipped: invalid CPD slots (Displace=%d, Turb=%d, HISM=%s)"),
+			TEXT("RegisterFoliageInstance skipped: invalid CPD slots (Displace=%d, DisplaceY=%d, Turb=%d, HISM=%s)"),
 			CPDSlotDisplace,
+			CPDSlotDisplaceY,
 			CPDSlotTurbulence,
 			*HISM->GetName());
 		return FWindEntityHandle();
@@ -1091,6 +1159,9 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 	Receiver.Sensitivity = Sensitivity;
 	Receiver.DisplacementCurrent = 0.f;
 	Receiver.DisplacementVelocity = 0.f;
+	Receiver.Displacement2D = FVector2D::ZeroVector;
+	Receiver.Velocity2D = FVector2D::ZeroVector;
+	Receiver.FilteredWindDir = FVector2D::ZeroVector;
 	Receiver.StiffnessK = Stiffness;
 	Receiver.DampingC = Damping;
 	Receiver.Mass = Mass;
@@ -1106,7 +1177,7 @@ FWindEntityHandle UWindSubsystem::RegisterFoliageInstance(
 		.set<FFoliageWorldPosition>({WorldLocation})
 		.set<FWindReceiver>(Receiver)
 		.set<FWindVelocityAtEntity>({FVector::ZeroVector, 0.f})
-		.set<FFoliageInstanceData>({HISM, InstanceIndex, CPDSlotDisplace, CPDSlotTurbulence})
+		.set<FFoliageInstanceData>({HISM, InstanceIndex, CPDSlotDisplace, CPDSlotDisplaceY, CPDSlotTurbulence})
 		.add<FFoliageTag>();
 
 	return FWindEntityHandle(E.id());
@@ -1132,7 +1203,7 @@ int32 UWindSubsystem::ApplyFoliageInteractionImpulse(
 	int32 AffectedCount = 0;
 	ECSWorld->each(
 		[Origin, Radius, RadiusSq, SafeStrength, SafeTurbulenceBoost, EffectiveMaxSpeed, bAffectFilteredWind, &AffectedCount]
-		(FWindReceiver& Recv, const FFoliageWorldPosition& Pos, FWindVelocityAtEntity& WindAt)
+		(FWindReceiver& Recv, const FFoliageWorldPosition& Pos, const FFoliageInstanceData& Foliage, FWindVelocityAtEntity& WindAt)
 		{
 			const float DistSq = FVector::DistSquared(Pos.Location, Origin);
 			if (DistSq > RadiusSq)
@@ -1151,17 +1222,55 @@ int32 UWindSubsystem::ApplyFoliageInteractionImpulse(
 			const float SensitivityScale = FMath::Clamp(Recv.Sensitivity, 0.25f, 3.f);
 			const float ImpulseVelocity = SafeStrength * Falloff * SensitivityScale;
 
-			const float MaxImpulseVel = FMath::Max(Recv.MaxVelocity * 2.f, 0.1f);
-			Recv.DisplacementVelocity = FMath::Clamp(
-				Recv.DisplacementVelocity + ImpulseVelocity,
-				-MaxImpulseVel,
-				MaxImpulseVel);
+			const bool bDirectional = (Foliage.CPDSlotDisplaceY >= 0);
+			if (bDirectional)
+			{
+				// Directional impulse: push outward from origin on XY plane.
+				FVector2D Dir2D(Pos.Location.X - Origin.X, Pos.Location.Y - Origin.Y);
+				const float DirLen = Dir2D.Size();
+				if (DirLen > KINDA_SMALL_NUMBER)
+				{
+					Dir2D /= DirLen;
+				}
+				else
+				{
+					Dir2D = FVector2D(1.f, 0.f);
+				}
 
-			const float MaxBend = FMath::Max(Recv.Sensitivity * 3.5f, 0.35f);
-			Recv.DisplacementCurrent = FMath::Clamp(
-				Recv.DisplacementCurrent + ImpulseVelocity * 0.05f,
-				0.f,
-				MaxBend);
+				const float MaxImpulseVel = FMath::Max(Recv.MaxVelocity * 2.f, 0.1f);
+				Recv.Velocity2D += Dir2D * ImpulseVelocity;
+				const float VLen = Recv.Velocity2D.Size();
+				if (VLen > MaxImpulseVel)
+				{
+					Recv.Velocity2D *= (MaxImpulseVel / VLen);
+				}
+
+				const float MaxBend = FMath::Max(Recv.Sensitivity * 3.5f, 0.35f);
+				Recv.Displacement2D += Dir2D * (ImpulseVelocity * 0.05f);
+				const float DLen = Recv.Displacement2D.Size();
+				if (DLen > MaxBend)
+				{
+					Recv.Displacement2D *= (MaxBend / DLen);
+				}
+
+				// Keep scalar fields in sync for debug.
+				Recv.DisplacementCurrent = Recv.Displacement2D.Size();
+				Recv.DisplacementVelocity = Recv.Velocity2D.Size();
+			}
+			else
+			{
+				const float MaxImpulseVel = FMath::Max(Recv.MaxVelocity * 2.f, 0.1f);
+				Recv.DisplacementVelocity = FMath::Clamp(
+					Recv.DisplacementVelocity + ImpulseVelocity,
+					-MaxImpulseVel,
+					MaxImpulseVel);
+
+				const float MaxBend = FMath::Max(Recv.Sensitivity * 3.5f, 0.35f);
+				Recv.DisplacementCurrent = FMath::Clamp(
+					Recv.DisplacementCurrent + ImpulseVelocity * 0.05f,
+					0.f,
+					MaxBend);
+			}
 
 			WindAt.Turbulence = FMath::Clamp(
 				FMath::Max(WindAt.Turbulence, SafeTurbulenceBoost * Falloff),

@@ -37,8 +37,18 @@ struct FWindMotorData
 struct FWindReceiver
 {
 	float Sensitivity = 1.f;
+
+	// Scalar displacement (legacy / backward compat when CPDSlotDisplaceY < 0).
 	float DisplacementCurrent = 0.f;
 	float DisplacementVelocity = 0.f;
+
+	// Directional 2D displacement (XY plane bend). Used when CPDSlotDisplaceY >= 0.
+	FVector2D Displacement2D = FVector2D::ZeroVector;
+	FVector2D Velocity2D = FVector2D::ZeroVector;
+
+	// Filtered wind direction (unit XY, smoothed to suppress grid jitter).
+	FVector2D FilteredWindDir = FVector2D::ZeroVector;
+
 	float StiffnessK = 10.f;
 	float DampingC = 2.f;
 
@@ -60,8 +70,9 @@ struct FFoliageInstanceData
 {
 	void*  HISMComponentPtr = nullptr;
 	int32  InstanceIndex = -1;
-	int32  CPDSlotDisplace = 0;
-	int32  CPDSlotTurb = 1;
+	int32  CPDSlotDisplace = 0;   // X displacement (or scalar if CPDSlotDisplaceY < 0)
+	int32  CPDSlotDisplaceY = 1;  // Y displacement. -1 = scalar-only mode.
+	int32  CPDSlotTurb = 2;       // Turbulence
 };
 
 // Cached world position for foliage entity
